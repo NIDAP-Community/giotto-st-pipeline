@@ -1,0 +1,29 @@
+# R and RStudio artifacts
+.Rapp.history
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# renv local state (lockfile is tracked separately)
+renv/library/
+renv/staging/
+renv/cellar/
+renv/python/
+renv/sandbox/
+renv/cache/
+
+# macOS metadata
+.DS_Store
+._*
+
+# Generated analysis outputs
+results/
+*.sif
+*.tar
+*.log
+
+# Misc temporary files
+.Rplots.pdf
+.vscode/
+.idea/
