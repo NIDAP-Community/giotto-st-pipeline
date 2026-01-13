@@ -1,14 +1,20 @@
 # Quickstart
 
-1. Load R and restore dependencies (once per environment):
+1. Clone the repository and enter it:
+
+	```bash
+	git clone https://github.com/NIDAP-Community/giotto-st-pipeline.git
+	cd giotto-st-pipeline
+	```
+
+2. Load R and restore dependencies (once per environment):
 
 	```bash
 	module load R/4.4.3
-	cd /path/to/giotto-st-pipeline
 	Rscript -e 'renv::restore(prompt = FALSE)'
 	```
 
-2. Run a Xenium dataset (
+3. Run a Xenium dataset (
 	`cell_feature_matrix.h5` + `cells.csv[.gz]`) and capture outputs in a mounted directory:
 
 	```bash
@@ -19,7 +25,7 @@
 	  --project_id XETG00202_R1
 	```
 
-3. Run a Visium / Visium HD Spaceranger outs directory (the pipeline auto-unzips `*spatial*.zip` bundles if present). Downsample large runs with `--max_cells`:
+4. Run a Visium / Visium HD Spaceranger outs directory (the pipeline auto-unzips `*spatial*.zip` bundles if present). Downsample large runs with `--max_cells`:
 
 	```bash
 	Rscript scripts/run_all.R \
@@ -30,7 +36,7 @@
 	  --max_cells 6000
 	```
 
-4. Run an AnnData file (requires `anndata` + `scipy` in the Giotto Python environment):
+5. Run an AnnData file (requires `anndata` + `scipy` in the Giotto Python environment):
 
 	```bash
 	Rscript scripts/run_all.R \
@@ -41,7 +47,7 @@
 	  --python_path ~/.local/share/r-miniconda/envs/giotto_env/bin/python
 	```
 
-5. Inspect results under `results/<project_id>/`:
+6. Inspect results under `results/<project_id>/`:
 
 	- `metadata/run_parameters.json` records inputs, QC stats, and (if applicable) the temporary spatial extraction path.
 	- `metadata/<project_id>_filter_summary.csv` lists cells before/after each QC threshold.

@@ -36,8 +36,9 @@ These figures are exported automatically beneath `results/<run_id>/plots/` and `
 ## Quick Start (Local)
 
 ```bash
+git clone https://github.com/NIDAP-Community/giotto-st-pipeline.git
+cd giotto-st-pipeline
 module load R/4.4.3
-cd /path/to/giotto-st-pipeline
 Rscript -e 'renv::restore(prompt = FALSE)'
 Rscript scripts/run_all.R \
 	--input_format xenium \

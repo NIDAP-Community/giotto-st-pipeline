@@ -52,3 +52,4 @@
 - Updated QC summary export filename to metadata/XETG00202_R1_qc_filter_summary.csv to avoid duplicated suffix and removed the legacy file.
 - Enabled Visium ingest in scripts/run_all.R, adding ZIP-aware spatial handling in R/ingest_visium_hd.R to auto-extract archives, then executed runs on SCAF3120_23001460_Veh_IaG_4 and SCAF3121_23001459_YAP_5Wk_3 (max_cells=6000) producing results/visium_SCAF3120/ and results/visium_SCAF3121/.
 - Refreshed README and QUICKSTART to highlight spatial ZIP extraction, per-filter QC summaries, and the new Visium datasets.
+- Clarified setup docs to include cloning the repository before running scripts.
