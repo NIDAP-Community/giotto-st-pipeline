@@ -7,7 +7,7 @@ suppressPackageStartupMessages({
 # Run the core Giotto workflow shared between ST modalities.
 run_basic_pipeline <- function(gobj, stats, output_dir, project_id, cores = 4) {
   if (is.null(stats) || is.null(stats$n_genes) || is.null(stats$n_cells)) {
-    expr_raw <- Giotto::get_expression_values(gobj, values = "raw")
+    expr_raw <- methods::slot(gobj, "raw_exprs")
     stats <- list(n_genes = nrow(expr_raw), n_cells = ncol(expr_raw))
   }
 

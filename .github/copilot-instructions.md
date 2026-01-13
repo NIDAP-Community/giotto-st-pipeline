@@ -175,4 +175,16 @@ At the start of a coding session (or before major work), Copilot should:
 - Ensure the user has loaded R via `module load R` or equivalent
 - If the terminal is unresponsive to `Rscript`, suggest checking module load status or using full path to Rscript binary.
 
+## 14) When to commit
+- Commit at least once per day during active development.
+- Commit after completing a logical unit of work (feature, fix, refactor).
+- Write meaningful commit messages summarizing changes.
+- Make small, focused commits rather than large, monolithic ones.
+- Make updates to documents (README, decision log, session notes) part of regular commits.
+- Push to GitHub at least once per day to back up work and enable collaboration.
+- Do not push autonomous changes without user review.
+
+---
+
+
 

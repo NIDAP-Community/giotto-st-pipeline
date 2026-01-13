@@ -32,3 +32,13 @@
 - New R packages require an updated `renv.lock`; large install steps should occur outside the HPC head node when possible.
 - Docker/Apptainer images will install dependencies via `renv::restore()` during build time.
 
+## 2026-01-13 — Visium spatial archives + per-filter QC summaries
+**Decision:** Treat Spaceranger `*spatial*.zip` bundles as first-class Visium inputs and persist per-threshold QC statistics to a CSV alongside run metadata.
+
+**Rationale:** Many Cell Ranger deliveries package spatial assets as ZIP archives; auto-extracting them preserves the Container-as-a-Function contract. Recording before/after counts for each QC filter improves traceability when tuning thresholds.
+
+**Consequences:**
+- `ingest_visium_hd()` now unpacks spatial archives to a temp directory and records provenance in `run_parameters.json`.
+- Every run writes `<project_id>_filter_summary.csv` under `metadata/`, enabling downstream reports without parsing JSON.
+- Documentation must note archive handling and the additional metadata artefact.
+

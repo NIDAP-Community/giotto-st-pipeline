@@ -4,6 +4,7 @@ suppressPackageStartupMessages({
   library(cli)
   library(rlang)
   library(jsonlite)
+  library(Matrix)
 })
 
 # ---- helpers ---------------------------------------------------------------
@@ -51,8 +52,26 @@ source_helper <- function(rel_path) {
   invisible(candidate)
 }
 
+split_prefixes <- function(value) {
+  if (is.null(value)) {
+    return(character())
+  }
+  chars <- as.character(value)
+  chars <- chars[!is.na(chars)]
+  if (length(chars) == 0) {
+    return(character())
+  }
+  pieces <- unlist(strsplit(chars, ",", fixed = FALSE), use.names = FALSE)
+  pieces <- trimws(pieces)
+  pieces <- pieces[nzchar(pieces)]
+  unique(pieces)
+}
+
 load_support_files <- function() {
   source_helper("R/ingest_xenium.R")
+  source_helper("R/ingest_visium_hd.R")
+  source_helper("R/utils_sparse.R")
+  source_helper("R/ingest_h5ad.R")
   source_helper("R/pipeline_basic.R")
   invisible(TRUE)
 }
@@ -70,6 +89,54 @@ normalize_params <- function(params) {
     cli::cli_abort("Invalid {.var --seed} value")
   }
 
+  if (!is.null(params$max_cells)) {
+    params$max_cells <- suppressWarnings(as.integer(params$max_cells))
+    if (is.na(params$max_cells) || params$max_cells < 1) {
+      params$max_cells <- NA_integer_
+    }
+  } else {
+    params$max_cells <- NA_integer_
+  }
+
+  if (!is.null(params$min_genes_per_cell)) {
+    params$min_genes_per_cell <- suppressWarnings(as.integer(params$min_genes_per_cell))
+    if (is.na(params$min_genes_per_cell) || params$min_genes_per_cell < 1) {
+      params$min_genes_per_cell <- NA_integer_
+    }
+  } else {
+    params$min_genes_per_cell <- NA_integer_
+  }
+
+  if (!is.null(params$min_total_expr_per_cell)) {
+    params$min_total_expr_per_cell <- suppressWarnings(as.integer(params$min_total_expr_per_cell))
+    if (is.na(params$min_total_expr_per_cell) || params$min_total_expr_per_cell < 1) {
+      params$min_total_expr_per_cell <- NA_integer_
+    }
+  } else {
+    params$min_total_expr_per_cell <- NA_integer_
+  }
+
+  if (!is.null(params$max_mito_pct)) {
+    params$max_mito_pct <- suppressWarnings(as.numeric(params$max_mito_pct))
+    if (is.na(params$max_mito_pct) || params$max_mito_pct < 0) {
+      params$max_mito_pct <- NA_real_
+    }
+  } else {
+    params$max_mito_pct <- NA_real_
+  }
+
+  raw_prefix <- params$mito_gene_prefixes
+  if (is.null(raw_prefix) || (length(raw_prefix) == 1 && is.na(raw_prefix))) {
+    prefixes <- c("MT-")
+  } else {
+    prefixes <- split_prefixes(raw_prefix)
+    if (length(prefixes) == 1 && toupper(prefixes) == "NONE") {
+      prefixes <- character()
+    }
+  }
+  prefixes <- toupper(prefixes)
+  params$mito_gene_prefixes <- prefixes
+
   if (!is.null(params$python_path) && nzchar(params$python_path)) {
     if (!file.exists(params$python_path)) {
       cli::cli_abort("Provided {.var --python_path} does not exist: {.path {params$python_path}}")
@@ -79,8 +146,19 @@ normalize_params <- function(params) {
     params$python_path <- NULL
   }
 
-  if (!is.null(params$input_dir) && nzchar(params$input_dir) && dir.exists(params$input_dir)) {
-    params$input_dir <- normalizePath(params$input_dir, mustWork = TRUE)
+  if (!is.null(params$input_dir) && nzchar(params$input_dir)) {
+    if (dir.exists(params$input_dir)) {
+      params$input_dir <- normalizePath(params$input_dir, mustWork = TRUE)
+    } else if (file.exists(params$input_dir)) {
+      params$input_dir <- normalizePath(params$input_dir, mustWork = TRUE)
+    }
+  }
+
+  if (!is.null(params$input_path) && nzchar(params$input_path)) {
+    if (!file.exists(params$input_path)) {
+      cli::cli_abort("h5ad input file not found: {.path {params$input_path}}")
+    }
+    params$input_path <- normalizePath(params$input_path, mustWork = TRUE)
   }
 
   params
@@ -92,6 +170,13 @@ detect_input_format <- function(params) {
     return(fmt)
   }
 
+  if (!is.null(params$input_path) && nzchar(params$input_path)) {
+    ext <- tolower(tools::file_ext(params$input_path))
+    if (identical(ext, "h5ad")) {
+      return("h5ad")
+    }
+  }
+
   in_dir <- params$input_dir
   if (!is.null(in_dir) && dir.exists(in_dir)) {
     in_dir_norm <- normalizePath(in_dir, mustWork = FALSE)
@@ -101,6 +186,36 @@ detect_input_format <- function(params) {
     subdirs <- list.dirs(in_dir_norm, recursive = FALSE, full.names = TRUE)
     if (any(file.exists(file.path(subdirs, "cell_feature_matrix.h5")))) {
       return("xenium")
+    }
+
+    visium_markers <- c(
+      file.path(in_dir_norm, "filtered_feature_bc_matrix.h5"),
+      file.path(in_dir_norm, "filtered_feature_bc_matrix"),
+      file.path(in_dir_norm, "raw_feature_bc_matrix.h5"),
+      file.path(in_dir_norm, "raw_feature_bc_matrix")
+    )
+    spatial_dir <- file.path(in_dir_norm, "spatial")
+    if (any(file.exists(visium_markers)) || any(dir.exists(visium_markers))) {
+      if (dir.exists(spatial_dir)) {
+        return("visium")
+      }
+    }
+    visium_subdirs <- subdirs[vapply(subdirs, function(sd) {
+      any(file.exists(file.path(sd, c("filtered_feature_bc_matrix.h5", "raw_feature_bc_matrix.h5")))) ||
+        any(dir.exists(file.path(sd, c("filtered_feature_bc_matrix", "raw_feature_bc_matrix"))))
+    }, logical(1))]
+    if (length(visium_subdirs) > 0) {
+      has_spatial <- vapply(visium_subdirs, function(sd) dir.exists(file.path(sd, "spatial")), logical(1))
+      if (any(has_spatial)) {
+        return("visium")
+      }
+    }
+  }
+
+  if (!is.null(in_dir) && file.exists(in_dir)) {
+    ext <- tolower(tools::file_ext(in_dir))
+    if (identical(ext, "h5ad")) {
+      return("h5ad")
     }
   }
 
@@ -121,7 +236,9 @@ parse_args <- function() {
       optparse$make_option(c("--input_format"), type = "character", default = "auto",
                help = "Input format: auto|xenium|visium|matrix. 'matrix' = explicit expr+spatial(+meta)."),
       optparse$make_option(c("--input_dir"), type = "character", default = NULL,
-                           help = "Standardized ST input directory (recommended for general support)."),
+               help = "Standardized ST input directory (recommended for general support)."),
+      optparse$make_option(c("--input_path"), type = "character", default = NULL,
+               help = "Path to a single input file (e.g., .h5ad)."),
       optparse$make_option(c("--expr"), type = "character", default = NULL,
                            help = "Expression matrix file (genes x spots/cells). Used for input_format=matrix."),
       optparse$make_option(c("--spatial"), type = "character", default = NULL,
@@ -138,6 +255,16 @@ parse_args <- function() {
                help = "Number of cores to use (default: 4)."),
       optparse$make_option(c("--seed"), type = "integer", default = 1,
                            help = "Random seed for reproducibility."),
+      optparse$make_option(c("--max_cells"), type = "integer", default = NA,
+               help = "Optional cap on number of cells/spots to process (random downsample)."),
+       optparse$make_option(c("--min_genes_per_cell"), type = "integer", default = NA,
+          help = "Optional QC filter: drop cells with detected genes below this threshold."),
+       optparse$make_option(c("--min_total_expr_per_cell"), type = "integer", default = NA,
+          help = "Optional QC filter: drop cells with total expression below this threshold."),
+       optparse$make_option(c("--max_mito_pct"), type = "double", default = NA,
+          help = "Optional QC filter: drop cells whose mitochondrial fraction exceeds this percentage."),
+        optparse$make_option(c("--mito_gene_prefixes"), type = "character", default = NA,
+             help = "Comma-separated gene symbol prefixes to treat as mitochondrial (case-insensitive). Use 'none' to disable."),
       optparse$make_option(c("--dry_run"), action = "store_true", default = FALSE,
                            help = "Validate inputs and config, then exit without running analysis."),
       optparse$make_option(c("--verbose"), action = "store_true", default = FALSE,
@@ -209,16 +336,34 @@ create_giotto_object <- function(params, output_dir) {
     ))
   }
 
+  if (fmt == "visium") {
+    abort_missing("--input_dir", params$input_dir)
+    return(ingest_visium_hd(
+      input_dir = params$input_dir,
+      output_dir = output_dir,
+      project_id = params$project_id,
+      python_path = params$python_path,
+      cores = params$cores
+    ))
+  }
+
+  if (fmt == "h5ad") {
+    input_path <- params$input_path %||% params$input_dir
+    abort_missing("--input_path", input_path)
+    return(ingest_h5ad(
+      input_path = input_path,
+      output_dir = output_dir,
+      project_id = params$project_id,
+      python_path = params$python_path,
+      cores = params$cores
+    ))
+  }
+
   if (fmt == "matrix") {
     abort_missing("--expr", params$expr)
     abort_missing("--spatial", params$spatial)
     if (!is.null(params$meta)) abort_missing("--meta", params$meta)
     cli::cli_abort("input_format=matrix is not implemented yet.")
-  }
-
-  if (fmt == "visium") {
-    abort_missing("--input_dir", params$input_dir)
-    cli::cli_abort("input_format=visium is not implemented yet.")
   }
 
   if (fmt == "auto") {
@@ -237,6 +382,162 @@ run_pipeline <- function(gobj, params, stats) {
     output_dir = params$output_dir,
     project_id = params$project_id,
     cores = params$cores
+  )
+}
+
+maybe_downsample_giotto <- function(gobj, stats, max_cells) {
+  if (is.na(max_cells) || max_cells < 1) {
+    return(list(giotto = gobj, stats = stats, downsampled = FALSE, removed = 0L))
+  }
+
+  expr_raw <- methods::slot(gobj, "raw_exprs")
+  current_cells <- stats$n_cells %||% ncol(expr_raw)
+  if (current_cells <= max_cells) {
+    return(list(giotto = gobj, stats = stats, downsampled = FALSE, removed = 0L))
+  }
+
+  cell_dt <- Giotto::pDataDT(gobj)
+  if (!"cell_ID" %in% names(cell_dt)) {
+    cli::cli_abort("Giotto object lacks cell_ID metadata; cannot downsample.")
+  }
+
+  keep_ids <- sample(cell_dt$cell_ID, max_cells)
+  cli::cli_alert_info("Downsampling from {current_cells} to {length(keep_ids)} cells/spots")
+  gobj_ds <- Giotto::subsetGiotto(gobj, cell_ids = keep_ids)
+
+  stats$n_cells <- length(keep_ids)
+
+  list(giotto = gobj_ds, stats = stats, downsampled = TRUE, removed = current_cells - length(keep_ids))
+}
+
+compute_cell_metrics <- function(expr_raw, mito_prefixes) {
+  total_cells <- as.integer(ncol(expr_raw))
+  gene_counts <- Matrix::colSums(expr_raw > 0)
+  total_expr <- Matrix::colSums(expr_raw)
+
+  mito_prefixes_upper <- unique(toupper(mito_prefixes))
+  mito_prefixes_upper <- mito_prefixes_upper[nzchar(mito_prefixes_upper)]
+  mito_mask <- rep(FALSE, nrow(expr_raw))
+  mito_genes_detected <- 0L
+  mito_pct <- rep(NA_real_, total_cells)
+
+  if (length(mito_prefixes_upper) > 0) {
+    gene_names_upper <- toupper(rownames(expr_raw) %||% rep("", nrow(expr_raw)))
+    for (pref in mito_prefixes_upper) {
+      mito_mask <- mito_mask | startsWith(gene_names_upper, pref)
+    }
+    mito_genes_detected <- sum(mito_mask)
+    if (mito_genes_detected > 0) {
+      mito_counts <- Matrix::colSums(expr_raw[mito_mask, , drop = FALSE])
+      mito_pct <- ifelse(total_expr > 0, (mito_counts / total_expr) * 100, 0)
+    } else {
+      mito_pct <- rep(0, total_cells)
+    }
+  }
+
+  list(
+    gene_counts = as.numeric(gene_counts),
+    total_expr = as.numeric(total_expr),
+    mito_pct = as.numeric(mito_pct),
+    mito_genes_detected = mito_genes_detected,
+    mito_prefixes = mito_prefixes_upper,
+    total_cells = total_cells
+  )
+}
+
+apply_qc_filters <- function(gobj, stats, thresholds) {
+  expr_raw <- methods::slot(gobj, "raw_exprs")
+  metrics <- compute_cell_metrics(expr_raw, thresholds$mito_prefixes %||% character())
+  if (metrics$total_cells == 0) {
+    return(list(giotto = gobj, stats = stats, filtered = FALSE, removed = 0L, details = list(), summary = list()))
+  }
+
+    keep <- rep(TRUE, metrics$total_cells)
+    details <- list()
+
+    record_detail <- function(type, threshold, before, removed, extra = NULL) {
+      detail <- list(
+        type = type,
+        threshold = threshold,
+        total_before = as.integer(before),
+        removed = as.integer(removed),
+        total_after = as.integer(before - removed)
+      )
+    if (!is.null(extra)) {
+      detail <- c(detail, extra)
+    }
+    details <<- append(details, list(detail))
+  }
+
+  if (!is.na(thresholds$min_genes_per_cell) && thresholds$min_genes_per_cell > 0) {
+      before <- sum(keep)
+    fail <- metrics$gene_counts < thresholds$min_genes_per_cell
+      removed <- as.integer(sum(fail & keep))
+      record_detail("min_genes_per_cell", thresholds$min_genes_per_cell, before, removed)
+      if (removed > 0) {
+        keep[fail & keep] <- FALSE
+    }
+  }
+
+  if (!is.na(thresholds$min_total_expr_per_cell) && thresholds$min_total_expr_per_cell > 0) {
+      before <- sum(keep)
+    fail <- metrics$total_expr < thresholds$min_total_expr_per_cell
+      removed <- as.integer(sum(fail & keep))
+      record_detail("min_total_expr_per_cell", thresholds$min_total_expr_per_cell, before, removed)
+      if (removed > 0) {
+        keep[fail & keep] <- FALSE
+    }
+  }
+
+  if (!is.na(thresholds$max_mito_pct) && thresholds$max_mito_pct >= 0 && any(!is.na(metrics$mito_pct))) {
+      before <- sum(keep)
+      fail <- metrics$mito_pct > thresholds$max_mito_pct
+      fail_clean <- ifelse(is.na(fail), FALSE, fail)
+      removed <- as.integer(sum(fail_clean & keep))
+    record_detail(
+      "max_mito_pct",
+      thresholds$max_mito_pct,
+        before,
+        removed,
+      extra = list(prefixes = metrics$mito_prefixes, mito_genes_detected = metrics$mito_genes_detected)
+    )
+    if (removed > 0) {
+        idx <- which(fail_clean & keep)
+        if (length(idx) > 0) {
+          keep[idx] <- FALSE
+        }
+    }
+  }
+
+  total_removed <- as.integer(sum(!keep))
+  if (total_removed == metrics$total_cells && total_removed > 0) {
+    cli::cli_abort("QC filters removed all cells. Loosen thresholds and retry.")
+  }
+
+  if (total_removed > 0) {
+    keep_ids <- colnames(expr_raw)[keep]
+    cli::cli_alert_info(
+      "QC filtering removed {total_removed} of {metrics$total_cells} cells. Remaining: {length(keep_ids)}"
+    )
+    gobj <- Giotto::subsetGiotto(gobj, cell_ids = keep_ids)
+  }
+
+  stats$n_cells <- as.integer(metrics$total_cells - total_removed)
+  summary <- list(
+    total_cells_before = metrics$total_cells,
+    total_cells_after = stats$n_cells,
+    mito_genes_detected = metrics$mito_genes_detected,
+    mito_prefixes = metrics$mito_prefixes
+  )
+  stats$qc_overview <- summary
+
+  list(
+    giotto = gobj,
+    stats = stats,
+    filtered = total_removed > 0,
+    removed = total_removed,
+    details = details,
+    summary = summary
   )
 }
 
@@ -299,6 +600,40 @@ main <- function() {
       return(invisible(0))
     }
 
+    if (identical(params$input_format, "visium")) {
+      layout <- validate_visium_inputs(params$input_dir, params$project_id)
+      params$project_id <- layout$project_id
+      run_record$params <- params
+      run_record$ingest <- list(
+        run_dir = layout$run_dir,
+        matrix = layout$matrix,
+        spatial = layout$spatial,
+        image = layout$image
+      )
+      run_record$status <- "dry_run"
+      run_record$completed_utc <- timestamp_utc()
+      write_run_parameters(output_dir, run_record)
+      cli::cli_alert_success("Dry run: Visium inputs validated in {.path {layout$run_dir}}")
+      return(invisible(0))
+    }
+
+    if (identical(params$input_format, "h5ad")) {
+      input_path <- params$input_path %||% params$input_dir
+      layout <- validate_h5ad_inputs(input_path, params$project_id, params$python_path)
+      params$project_id <- layout$project_id
+      run_record$params <- params
+      run_record$ingest <- list(
+        h5ad_path = layout$path,
+        n_genes = layout$n_genes,
+        n_cells = layout$n_cells
+      )
+      run_record$status <- "dry_run"
+      run_record$completed_utc <- timestamp_utc()
+      write_run_parameters(output_dir, run_record)
+      cli::cli_alert_success("Dry run: h5ad inputs validated at {.path {layout$path}}")
+      return(invisible(0))
+    }
+
     cli::cli_abort("Dry run is not implemented for input_format={.val {params$input_format}}")
   }
 
@@ -310,12 +645,64 @@ main <- function() {
   run_record$params <- params
   run_record$ingest <- list(
     run_dir = ingest$run_dir,
-    h5_path = ingest$files$h5_path,
-    cells_path = ingest$files$cells_path,
     n_genes = ingest$stats$n_genes,
     n_cells = ingest$stats$n_cells
   )
+  ingest_files <- ingest$files %||% list()
+  ingest_files$run_dir <- NULL
+  run_record$ingest <- c(run_record$ingest, ingest_files)
   write_run_parameters(output_dir, run_record)
+
+  downsample <- maybe_downsample_giotto(ingest$giotto, ingest$stats, params$max_cells)
+  ingest$giotto <- downsample$giotto
+  ingest$stats <- downsample$stats
+  if (isTRUE(downsample$downsampled)) {
+    run_record$ingest$n_cells <- ingest$stats$n_cells
+    run_record$ingest$downsample <- list(
+      max_cells = params$max_cells,
+      removed = downsample$removed
+    )
+    write_run_parameters(output_dir, run_record)
+  }
+
+  qc_thresholds <- list(
+    min_genes_per_cell = params$min_genes_per_cell,
+    min_total_expr_per_cell = params$min_total_expr_per_cell,
+    max_mito_pct = params$max_mito_pct,
+    mito_prefixes = params$mito_gene_prefixes
+  )
+  qc_filter <- apply_qc_filters(ingest$giotto, ingest$stats, qc_thresholds)
+  ingest$giotto <- qc_filter$giotto
+  ingest$stats <- qc_filter$stats
+    if (qc_filter$filtered || length(qc_filter$details) > 0) {
+      run_record$ingest$n_cells <- ingest$stats$n_cells
+
+      qc_summary_path <- NULL
+      if (length(qc_filter$details) > 0) {
+        qc_rows <- lapply(qc_filter$details, function(detail) {
+          data.frame(
+            type = detail$type %||% NA_character_,
+            threshold = detail$threshold %||% NA_real_,
+            total_before = detail$total_before %||% NA_real_,
+            total_after = detail$total_after %||% NA_real_,
+            removed = detail$removed %||% NA_real_,
+            mito_prefixes = if (is.null(detail$prefixes) || length(detail$prefixes) == 0) NA_character_ else paste(detail$prefixes, collapse = ";"),
+            mito_genes_detected = detail$mito_genes_detected %||% NA_real_,
+            stringsAsFactors = FALSE
+          )
+        })
+        qc_table <- do.call(rbind, qc_rows)
+        qc_summary_path <- file.path(output_dir, "metadata", paste0(params$project_id, "_filter_summary.csv"))
+        utils::write.csv(qc_table, qc_summary_path, row.names = FALSE, quote = TRUE)
+      }
+
+      run_record$ingest$qc_filters <- qc_filter$details
+      run_record$ingest$qc_overview <- qc_filter$summary
+      if (!is.null(qc_summary_path)) {
+        run_record$ingest$qc_filter_summary_path <- qc_summary_path
+      }
+      write_run_parameters(output_dir, run_record)
+  }
 
   # Run pipeline
   cli::cli_h1("Run pipeline")
