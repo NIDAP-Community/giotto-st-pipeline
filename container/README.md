@@ -50,6 +50,8 @@ Override the immutable tag when you need a release-specific label:
 
 If local Docker rebuilds are blocked by enterprise mirror or signature issues, run the manual GitHub Actions workflow at `.github/workflows/publish-ghcr.yml`. It builds the lean image on GitHub-hosted runners and can publish `sha-<git-sha>`, `lean`, and `latest` without depending on the local workstation network path.
 
+If the workflow fails with a GHCR permission error such as `permission_denied: write_package`, add a repository or organization Actions secret named `GHCR_TOKEN` and rerun the workflow. That token should include at least `write:packages` and `read:packages`; include `repo` as well when the package is tied to a private repository or org policy requires it. The workflow prefers `GHCR_TOKEN` automatically and falls back to `GITHUB_TOKEN` only when no PAT secret is configured.
+
 ## Pull the published image
 
 ```

@@ -35,6 +35,7 @@ These figures are exported automatically beneath `results/<run_id>/plots/` and `
 - The published image excludes the optional `arrow` package and therefore expects non-parquet Visium metadata
 - A GHCR publish helper is available at `container/publish.sh` using `sha-<git-sha>`, `lean`, and `latest` tags
 - A manual GitHub Actions workflow at `.github/workflows/publish-ghcr.yml` can rebuild and republish the lean image outside the local network path
+- If GH Actions cannot push to GHCR with `GITHUB_TOKEN`, configure a `GHCR_TOKEN` Actions secret with `write:packages`
 - `results/` is ignored by git; generate outputs locally or inside the container and archive externally as needed
 
 ## Bind Mount Layout
