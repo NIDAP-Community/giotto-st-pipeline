@@ -72,11 +72,11 @@ Characteristics:
 - Executed via `Rscript` inside the container
 - No hidden global state
 - Minimal logic beyond orchestration
+- Stage-aware orchestration via one canonical entrypoint with restartable checkpoints
 
 Typical scripts:
-- `run_all.R`: end-to-end pipeline
-- `qc.R`: quality control only
-- `plots.R`: spatial visualization outputs
+- `run_all.R`: canonical workflow controller (`validate`, `ingest`, `qc`, `analyze`, `export`, `all`)
+- optional future stage-specific helper scripts for development/debugging only
 
 ---
 
@@ -144,6 +144,7 @@ outputs = container(inputs, configuration)
 
 ### Properties
 - A single canonical entrypoint script (e.g., `scripts/run_all.R`)
+- A stage selector inside that entrypoint for workflow restarts and checkpointed execution
 - Explicit inputs:
   - configuration file
   - data paths
@@ -157,8 +158,7 @@ outputs = container(inputs, configuration)
 - Local-first development must preserve function-like behavior.
 - The container runtime is an implementation detail, not a user-facing interface.
 
-This model mirrors the execution semantics used in the
-`multi-gene-correlations` project and is a core architectural invariant.
+This model is treated as a core architectural invariant for the repository.
 
 
 ---
@@ -170,13 +170,17 @@ User-provided ST data
 ↓
 Ingest & validation
 ↓
-Giotto object
+Giotto object checkpoint
 ↓
 QC & filtering stages
+↓
+QC-filtered Giotto checkpoint
 ↓
 Normalization & feature selection
 ↓
 Dimensionality reduction & clustering
+↓
+Analyzed Giotto checkpoint
 ↓
 Spatial analysis & visualization
 ↓
@@ -192,6 +196,7 @@ At no point is data assumed to be interactive-only or in-memory-only.
 
 All outputs are written to a predictable directory structure under a user-specified
 output path (e.g., `results/`), including:
+- intermediate Giotto object checkpoints per stage
 - QC summaries
 - Cluster assignments
 - Marker tables

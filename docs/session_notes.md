@@ -53,3 +53,36 @@
 - Enabled Visium ingest in scripts/run_all.R, adding ZIP-aware spatial handling in R/ingest_visium_hd.R to auto-extract archives, then executed runs on SCAF3120_23001460_Veh_IaG_4 and SCAF3121_23001459_YAP_5Wk_3 (max_cells=6000) producing results/visium_SCAF3120/ and results/visium_SCAF3121/.
 - Refreshed README and QUICKSTART to highlight spatial ZIP extraction, per-filter QC summaries, and the new Visium datasets.
 - Clarified setup docs to include cloning the repository before running scripts.
+
+## 2026-04-02
+- Pulled the latest GitHub commits onto local main (through f88aa5b) to sync the workspace before review.
+- Reviewed the new Visium and h5ad ingest paths plus container scaffolding; confirmed Docker CLI is installed locally, but the Docker daemon was not running, so image build could not complete.
+- Fixed a real container build blocker by changing container/Dockerfile to copy renv/settings.json instead of the non-existent renv/settings.dcf.
+- Updated scripts/run_all.R CLI help text so --input_format advertises h5ad alongside xenium, visium, and matrix.
+- Smoke-tested Rscript scripts/run_all.R --help; the entrypoint currently fails in this local environment until renv-installed packages (notably data.table) are restored.
+- Aligned the repo with the multi-gene-correlations CAF pattern: disabled automatic renv activation in .Rprofile, added a .dockerignore, added container/run_apptainer.sh, and documented the canonical /data and /output bind layout.
+- Updated container/build.sh so extra Docker arguments (for example --platform linux/amd64) can be forwarded from the helper script.
+- Refactored the workflow controller to support `--stage validate|ingest|qc|analyze|export|all`, added `--input_object` for restartable later-stage runs, and documented the new checkpoint objects in README, Quickstart, architecture, and the decision log.
+- Diagnosed Docker HTTPS failures as NIH TLS interception inside Linux containers (`NIH-DPKI-NS-SSLCA-1A` chaining to `NIH-DPKI-ROOT-1A`) rather than an R-specific bug.
+- Updated container/Dockerfile to accept an optional BuildKit secret (`extra_ca`) so enterprise root certificates can be injected at build time without committing them into the repository.
+- Added a configurable `RENV_RESTORE_EXCLUDE` Docker build argument (defaulting to `arrow`) so the default image can build within Docker Desktop disk limits while preserving CSV-based Visium support.
+- Successfully built `giotto-st-pipeline:dev` with `./container/build.sh giotto-st-pipeline:dev --secret id=extra_ca,src=/tmp/nih-dpki-root-1a.pem`.
+- Smoke-tested the built image with `docker run --rm giotto-st-pipeline:dev --help` and stage-aware error paths for `--stage analyze` and `--stage validate`; both exercised the new staged CLI and wrote run metadata under `/output/metadata/run_parameters.json` before failing on controlled missing-input cases.
+- Decided to treat the first GHCR publication as a lean image that excludes `arrow` and therefore expects non-parquet Visium metadata at runtime.
+- Updated public docs to describe enterprise CA handling as a maintainer rebuild concern only, using the existing BuildKit secret path in container/Dockerfile and container/README.md.
+- Added OCI image labels to container/Dockerfile and removed explicit cross-repo references from user-facing docs so the repo keeps the same operational shape without naming other projects.
+- Added container/publish.sh plus GHCR publication docs describing the lean-image tag convention: one immutable `sha-<git-sha>` tag and floating `lean` plus `latest` aliases.
+- Hardened container/publish.sh to resolve the local source image by image ID instead of relying on direct tag inspection, which was inconsistent on the current Docker Desktop daemon.
+
+## 2026-04-08
+- Confirmed `ghcr.io/nidap-community/giotto-st-pipeline:latest` is published and runnable via `docker pull` plus `docker run --rm ... --help`.
+- Updated README and QUICKSTART to make the published GHCR image the default pull/run path, with Docker and Singularity examples that use the `/data` and `/output` contract.
+- Updated container/README.md so normal users pull the published image, while source rebuild and GHCR publication guidance remain maintainer-facing.
+- Recorded the GHCR publication milestone in CHANGELOG.md.
+- Tested the published image against the small h5ad fixture and found a real container defect: `anndata` is missing from the image's Python environment, so h5ad ingest fails even though CLI help succeeds.
+- Patched the Dockerfile to create an in-image Python virtual environment at `/opt/giotto-python` with `anndata` and `scipy`, and set `RETICULATE_PYTHON` to that interpreter for local rebuild testing.
+- Found a second rebuild issue after invalidating the cached apt layer: the base image was still using plain HTTP Ubuntu mirrors, which fail signature validation on this network path. Patched the Dockerfile to rewrite Ubuntu mirrors to HTTPS before `apt-get update`.
+- Found a third rebuild issue: the optional enterprise CA was being installed after `apt-get`, so it could not help HTTPS mirror access. Reordered the Dockerfile so CA injection happens before package installation.
+- Switched the default PCA backend from `FactoMineR` to `irlba` in the active pipeline code so the lean analysis path no longer depends on the heavier `FactoMineR` stack.
+- Added a manual GitHub Actions workflow at `.github/workflows/publish-ghcr.yml` so the lean image can be rebuilt and republished on GitHub-hosted runners when local Docker rebuilds are blocked by enterprise network issues.
+- Extended the Dockerfile's baked Python environment to include the Giotto-related runtime modules needed for `h5ad` ingest and clustering (`anndata`, `scipy`, `python-igraph`, `leidenalg`, `networkx`, `scikit-learn`, `python-louvain`) and added `cmake` for more reliable package builds in GitHub-hosted rebuilds.

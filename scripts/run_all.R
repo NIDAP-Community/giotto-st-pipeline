@@ -78,10 +78,16 @@ load_support_files <- function() {
 
 normalize_params <- function(params) {
   params$input_format <- tolower(params$input_format %||% "auto")
+  params$stage <- tolower(params$stage %||% "all")
   params$output_dir <- params$output_dir %||% "/output"
   params$cores <- as.integer(params$cores %||% 4)
   if (is.na(params$cores) || params$cores < 1) {
     cli::cli_abort("Invalid {.var --cores} value: {params$cores}")
+  }
+
+  valid_stages <- c("all", "validate", "ingest", "qc", "analyze", "export")
+  if (!params$stage %in% valid_stages) {
+    cli::cli_abort("Invalid {.var --stage} value: {params$stage}. Use one of {paste(valid_stages, collapse = ', ')}")
   }
 
   params$seed <- as.integer(params$seed %||% 1)
@@ -161,6 +167,15 @@ normalize_params <- function(params) {
     params$input_path <- normalizePath(params$input_path, mustWork = TRUE)
   }
 
+  if (!is.null(params$input_object) && nzchar(params$input_object)) {
+    if (!file.exists(params$input_object)) {
+      cli::cli_abort("Input object not found: {.path {params$input_object}}")
+    }
+    params$input_object <- normalizePath(params$input_object, mustWork = TRUE)
+  } else {
+    params$input_object <- NULL
+  }
+
   params
 }
 
@@ -233,12 +248,16 @@ parse_args <- function() {
     option_list <- list(
       optparse$make_option(c("--config"), type = "character", default = NULL,
                            help = "Path to YAML/JSON config file. CLI flags override config."),
+      optparse$make_option(c("--stage"), type = "character", default = "all",
+                           help = "Workflow stage: all|validate|ingest|qc|analyze|export (default: all)."),
       optparse$make_option(c("--input_format"), type = "character", default = "auto",
-               help = "Input format: auto|xenium|visium|matrix. 'matrix' = explicit expr+spatial(+meta)."),
+               help = "Input format: auto|xenium|visium|h5ad|matrix. 'matrix' = explicit expr+spatial(+meta)."),
       optparse$make_option(c("--input_dir"), type = "character", default = NULL,
                help = "Standardized ST input directory (recommended for general support)."),
       optparse$make_option(c("--input_path"), type = "character", default = NULL,
                help = "Path to a single input file (e.g., .h5ad)."),
+      optparse$make_option(c("--input_object"), type = "character", default = NULL,
+                           help = "Path to an existing Giotto RDS object for qc|analyze|export stages."),
       optparse$make_option(c("--expr"), type = "character", default = NULL,
                            help = "Expression matrix file (genes x spots/cells). Used for input_format=matrix."),
       optparse$make_option(c("--spatial"), type = "character", default = NULL,
@@ -383,6 +402,112 @@ run_pipeline <- function(gobj, params, stats) {
     project_id = params$project_id,
     cores = params$cores
   )
+}
+
+infer_project_id_from_object <- function(path) {
+  name <- basename(path)
+  name <- sub("\\.rds$", "", name, ignore.case = TRUE)
+  name <- sub("_ingested_giotto$", "", name)
+  name <- sub("_qc_giotto$", "", name)
+  name <- sub("_analyzed_giotto$", "", name)
+  name <- sub("_giotto_object$", "", name)
+  name
+}
+
+resolve_project_id <- function(project_id, input_object = NULL) {
+  if (!is.null(project_id) && nzchar(project_id) && !identical(project_id, "giotto-st")) {
+    return(project_id)
+  }
+  if (!is.null(input_object) && nzchar(input_object)) {
+    inferred <- infer_project_id_from_object(input_object)
+    if (nzchar(inferred)) {
+      return(inferred)
+    }
+  }
+  project_id
+}
+
+load_stage_object <- function(path) {
+  gobj <- readRDS(path)
+  if (!inherits(gobj, "giotto")) {
+    cli::cli_abort("Input object is not a Giotto object: {.path {path}}")
+  }
+
+  stats <- derive_giotto_stats(gobj)
+  list(giotto = gobj, stats = stats)
+}
+
+write_stage_object <- function(gobj, output_dir, project_id, suffix) {
+  object_path <- file.path(output_dir, "objects", paste0(project_id, "_", suffix, "_giotto.rds"))
+  saveRDS(gobj, object_path)
+  cli::cli_alert_success("Saved stage object: {.path {object_path}}")
+  object_path
+}
+
+write_filter_summary <- function(output_dir, project_id, qc_filter) {
+  if (length(qc_filter$details) == 0) {
+    return(NULL)
+  }
+
+  qc_rows <- lapply(qc_filter$details, function(detail) {
+    data.frame(
+      type = detail$type %||% NA_character_,
+      threshold = detail$threshold %||% NA_real_,
+      total_before = detail$total_before %||% NA_real_,
+      total_after = detail$total_after %||% NA_real_,
+      removed = detail$removed %||% NA_real_,
+      mito_prefixes = if (is.null(detail$prefixes) || length(detail$prefixes) == 0) NA_character_ else paste(detail$prefixes, collapse = ";"),
+      mito_genes_detected = detail$mito_genes_detected %||% NA_real_,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  qc_table <- do.call(rbind, qc_rows)
+  qc_summary_path <- file.path(output_dir, "metadata", paste0(project_id, "_filter_summary.csv"))
+  utils::write.csv(qc_table, qc_summary_path, row.names = FALSE, quote = TRUE)
+  qc_summary_path
+}
+
+perform_validation <- function(params, run_record) {
+  if (identical(params$input_format, "xenium")) {
+    layout <- validate_xenium_inputs(params$input_dir, params$project_id)
+    params$project_id <- layout$project_id
+    run_record$params <- params
+    run_record$ingest <- list(
+      run_dir = layout$run_dir,
+      h5_path = layout$h5_path,
+      cells_path = layout$cells_path
+    )
+    return(list(params = params, run_record = run_record, message = paste("Validated Xenium inputs in", layout$run_dir)))
+  }
+
+  if (identical(params$input_format, "visium")) {
+    layout <- validate_visium_inputs(params$input_dir, params$project_id)
+    params$project_id <- layout$project_id
+    run_record$params <- params
+    run_record$ingest <- list(
+      run_dir = layout$run_dir,
+      matrix = layout$matrix,
+      spatial = layout$spatial,
+      image = layout$image
+    )
+    return(list(params = params, run_record = run_record, message = paste("Validated Visium inputs in", layout$run_dir)))
+  }
+
+  if (identical(params$input_format, "h5ad")) {
+    input_path <- params$input_path %||% params$input_dir
+    layout <- validate_h5ad_inputs(input_path, params$project_id, params$python_path)
+    params$project_id <- layout$project_id
+    run_record$params <- params
+    run_record$ingest <- list(
+      h5ad_path = layout$path,
+      n_genes = layout$n_genes,
+      n_cells = layout$n_cells
+    )
+    return(list(params = params, run_record = run_record, message = paste("Validated h5ad inputs at", layout$path)))
+  }
+
+  cli::cli_abort("Validation is not implemented for input_format={.val {params$input_format}}")
 }
 
 maybe_downsample_giotto <- function(gobj, stats, max_cells) {
@@ -550,10 +675,17 @@ main <- function() {
   cfg <- read_config(args$config)
   params <- merge_config(cfg, args)
   params <- normalize_params(params)
-  params$input_format <- detect_input_format(params)
+  params$project_id <- resolve_project_id(params$project_id, params$input_object)
+  if (params$stage %in% c("all", "validate", "ingest") || is.null(params$input_object)) {
+    params$input_format <- detect_input_format(params)
+  }
 
   if (identical(params$input_format, "xenium") && (is.null(params$input_dir) || !nzchar(params$input_dir))) {
     cli::cli_abort("{.var --input_dir} is required for input_format=xenium")
+  }
+
+  if (params$stage %in% c("analyze", "export") && is.null(params$input_object)) {
+    cli::cli_abort("{.var --input_object} is required for stage={params$stage}")
   }
 
   output_dir <- params$output_dir
@@ -569,12 +701,13 @@ main <- function() {
 
   set.seed(params$seed)
 
-  # Record run parameters early (mirrors multi-gene-correlations style)
+  # Record run parameters early so controlled failures still produce metadata.
   run_record <- list(
     tool = "giotto-st-pipeline",
     script = "scripts/run_all.R",
     started_utc = timestamp_utc(),
     params = params,
+    stage = params$stage,
     session = list(
       r_version = R.version.string,
       platform = R.version$platform
@@ -583,147 +716,128 @@ main <- function() {
   run_params_path <- write_run_parameters(output_dir, run_record)
   cli::cli_alert_info("Wrote run parameters: {.path {run_params_path}}")
 
-  if (isTRUE(params$dry_run)) {
-    if (identical(params$input_format, "xenium")) {
-      layout <- validate_xenium_inputs(params$input_dir, params$project_id)
-      params$project_id <- layout$project_id
-      run_record$params <- params
-      run_record$ingest <- list(
-        run_dir = layout$run_dir,
-        h5_path = layout$h5_path,
-        cells_path = layout$cells_path
-      )
-      run_record$status <- "dry_run"
-      run_record$completed_utc <- timestamp_utc()
-      write_run_parameters(output_dir, run_record)
-      cli::cli_alert_success("Dry run: Xenium inputs validated in {.path {layout$run_dir}}")
-      return(invisible(0))
-    }
-
-    if (identical(params$input_format, "visium")) {
-      layout <- validate_visium_inputs(params$input_dir, params$project_id)
-      params$project_id <- layout$project_id
-      run_record$params <- params
-      run_record$ingest <- list(
-        run_dir = layout$run_dir,
-        matrix = layout$matrix,
-        spatial = layout$spatial,
-        image = layout$image
-      )
-      run_record$status <- "dry_run"
-      run_record$completed_utc <- timestamp_utc()
-      write_run_parameters(output_dir, run_record)
-      cli::cli_alert_success("Dry run: Visium inputs validated in {.path {layout$run_dir}}")
-      return(invisible(0))
-    }
-
-    if (identical(params$input_format, "h5ad")) {
-      input_path <- params$input_path %||% params$input_dir
-      layout <- validate_h5ad_inputs(input_path, params$project_id, params$python_path)
-      params$project_id <- layout$project_id
-      run_record$params <- params
-      run_record$ingest <- list(
-        h5ad_path = layout$path,
-        n_genes = layout$n_genes,
-        n_cells = layout$n_cells
-      )
-      run_record$status <- "dry_run"
-      run_record$completed_utc <- timestamp_utc()
-      write_run_parameters(output_dir, run_record)
-      cli::cli_alert_success("Dry run: h5ad inputs validated at {.path {layout$path}}")
-      return(invisible(0))
-    }
-
-    cli::cli_abort("Dry run is not implemented for input_format={.val {params$input_format}}")
+  if (isTRUE(params$dry_run) || identical(params$stage, "validate")) {
+    validation <- perform_validation(params, run_record)
+    run_record <- validation$run_record
+    params <- validation$params
+    run_record$status <- if (isTRUE(params$dry_run)) "dry_run" else "validated"
+    run_record$completed_utc <- timestamp_utc()
+    write_run_parameters(output_dir, run_record)
+    cli::cli_alert_success(validation$message)
+    return(invisible(0))
   }
 
-  # Ingest
-  cli::cli_h1("Ingest")
-  ingest <- create_giotto_object(params, output_dir)
-  params$project_id <- ingest$project_id
-  cli::cli_alert_info("Resolved project_id: {params$project_id}")
-  run_record$params <- params
-  run_record$ingest <- list(
-    run_dir = ingest$run_dir,
-    n_genes = ingest$stats$n_genes,
-    n_cells = ingest$stats$n_cells
-  )
-  ingest_files <- ingest$files %||% list()
-  ingest_files$run_dir <- NULL
-  run_record$ingest <- c(run_record$ingest, ingest_files)
-  write_run_parameters(output_dir, run_record)
-
-  downsample <- maybe_downsample_giotto(ingest$giotto, ingest$stats, params$max_cells)
-  ingest$giotto <- downsample$giotto
-  ingest$stats <- downsample$stats
-  if (isTRUE(downsample$downsampled)) {
-    run_record$ingest$n_cells <- ingest$stats$n_cells
-    run_record$ingest$downsample <- list(
-      max_cells = params$max_cells,
-      removed = downsample$removed
+  ingest <- NULL
+  if (is.null(params$input_object) || params$stage %in% c("all", "ingest")) {
+    cli::cli_h1("Ingest")
+    ingest <- create_giotto_object(params, output_dir)
+    params$project_id <- ingest$project_id
+    cli::cli_alert_info("Resolved project_id: {params$project_id}")
+    run_record$params <- params
+    run_record$ingest <- list(
+      run_dir = ingest$run_dir,
+      n_genes = ingest$stats$n_genes,
+      n_cells = ingest$stats$n_cells
+    )
+    ingest_files <- ingest$files %||% list()
+    ingest_files$run_dir <- NULL
+    run_record$ingest <- c(run_record$ingest, ingest_files)
+    write_run_parameters(output_dir, run_record)
+  } else {
+    cli::cli_h1("Load input object")
+    loaded <- load_stage_object(params$input_object)
+    params$project_id <- resolve_project_id(params$project_id, params$input_object)
+    run_record$params <- params
+    run_record$input_object <- params$input_object
+    ingest <- list(
+      giotto = loaded$giotto,
+      stats = loaded$stats,
+      project_id = params$project_id,
+      run_dir = dirname(params$input_object),
+      files = list(input_object = params$input_object)
     )
     write_run_parameters(output_dir, run_record)
   }
 
-  qc_thresholds <- list(
-    min_genes_per_cell = params$min_genes_per_cell,
-    min_total_expr_per_cell = params$min_total_expr_per_cell,
-    max_mito_pct = params$max_mito_pct,
-    mito_prefixes = params$mito_gene_prefixes
-  )
-  qc_filter <- apply_qc_filters(ingest$giotto, ingest$stats, qc_thresholds)
-  ingest$giotto <- qc_filter$giotto
-  ingest$stats <- qc_filter$stats
-    if (qc_filter$filtered || length(qc_filter$details) > 0) {
-      run_record$ingest$n_cells <- ingest$stats$n_cells
-
-      qc_summary_path <- NULL
-      if (length(qc_filter$details) > 0) {
-        qc_rows <- lapply(qc_filter$details, function(detail) {
-          data.frame(
-            type = detail$type %||% NA_character_,
-            threshold = detail$threshold %||% NA_real_,
-            total_before = detail$total_before %||% NA_real_,
-            total_after = detail$total_after %||% NA_real_,
-            removed = detail$removed %||% NA_real_,
-            mito_prefixes = if (is.null(detail$prefixes) || length(detail$prefixes) == 0) NA_character_ else paste(detail$prefixes, collapse = ";"),
-            mito_genes_detected = detail$mito_genes_detected %||% NA_real_,
-            stringsAsFactors = FALSE
-          )
-        })
-        qc_table <- do.call(rbind, qc_rows)
-        qc_summary_path <- file.path(output_dir, "metadata", paste0(params$project_id, "_filter_summary.csv"))
-        utils::write.csv(qc_table, qc_summary_path, row.names = FALSE, quote = TRUE)
-      }
-
-      run_record$ingest$qc_filters <- qc_filter$details
-      run_record$ingest$qc_overview <- qc_filter$summary
-      if (!is.null(qc_summary_path)) {
-        run_record$ingest$qc_filter_summary_path <- qc_summary_path
-      }
-      write_run_parameters(output_dir, run_record)
+  if (identical(params$stage, "ingest")) {
+    ingested_path <- write_stage_object(ingest$giotto, output_dir, params$project_id, "ingested")
+    run_record$stage_outputs <- list(ingested_object = ingested_path)
+    run_record$status <- "success"
+    run_record$completed_utc <- timestamp_utc()
+    write_run_parameters(output_dir, run_record)
+    return(invisible(0))
   }
 
-  # Run pipeline
-  cli::cli_h1("Run pipeline")
-  pipeline <- run_pipeline(ingest$giotto, params, ingest$stats)
+  if (params$stage %in% c("all", "qc")) {
+    downsample <- maybe_downsample_giotto(ingest$giotto, ingest$stats, params$max_cells)
+    ingest$giotto <- downsample$giotto
+    ingest$stats <- downsample$stats
+    if (isTRUE(downsample$downsampled)) {
+      run_record$ingest$n_cells <- ingest$stats$n_cells
+      run_record$ingest$downsample <- list(
+        max_cells = params$max_cells,
+        removed = downsample$removed
+      )
+      write_run_parameters(output_dir, run_record)
+    }
+
+    qc_thresholds <- list(
+      min_genes_per_cell = params$min_genes_per_cell,
+      min_total_expr_per_cell = params$min_total_expr_per_cell,
+      max_mito_pct = params$max_mito_pct,
+      mito_prefixes = params$mito_gene_prefixes
+    )
+    qc_filter <- apply_qc_filters(ingest$giotto, ingest$stats, qc_thresholds)
+    ingest$giotto <- qc_filter$giotto
+    ingest$stats <- qc_filter$stats
+    run_record$ingest$n_cells <- ingest$stats$n_cells
+    run_record$ingest$qc_filters <- qc_filter$details
+    run_record$ingest$qc_overview <- qc_filter$summary
+    qc_summary_path <- write_filter_summary(output_dir, params$project_id, qc_filter)
+    if (!is.null(qc_summary_path)) {
+      run_record$ingest$qc_filter_summary_path <- qc_summary_path
+    }
+    write_run_parameters(output_dir, run_record)
+
+    if (identical(params$stage, "qc")) {
+      qc_path <- write_stage_object(ingest$giotto, output_dir, params$project_id, "qc")
+      run_record$stage_outputs <- list(qc_object = qc_path)
+      run_record$status <- "success"
+      run_record$completed_utc <- timestamp_utc()
+      write_run_parameters(output_dir, run_record)
+      return(invisible(0))
+    }
+  }
+
+  if (params$stage %in% c("all", "analyze")) {
+    cli::cli_h1("Run analysis")
+    analysis <- run_analysis_pipeline(ingest$giotto, ingest$stats, cores = params$cores)
+    ingest$giotto <- analysis$giotto
+    ingest$stats <- analysis$stats
+    run_record$pipeline <- list(cluster_column = analysis$cluster_column)
+    write_run_parameters(output_dir, run_record)
+
+    if (identical(params$stage, "analyze")) {
+      analyzed_path <- write_stage_object(ingest$giotto, output_dir, params$project_id, "analyzed")
+      run_record$stage_outputs <- list(analyzed_object = analyzed_path)
+      run_record$status <- "success"
+      run_record$completed_utc <- timestamp_utc()
+      write_run_parameters(output_dir, run_record)
+      return(invisible(0))
+    }
+  }
+
+  cli::cli_h1("Export results")
+  pipeline <- export_pipeline_outputs(
+    gobj = ingest$giotto,
+    stats = ingest$stats,
+    output_dir = output_dir,
+    project_id = params$project_id,
+    cluster_column = run_record$pipeline$cluster_column %||% NULL
+  )
   pipeline_outputs <- pipeline$outputs %||% list()
 
-  run_record$pipeline <- list(
-    cluster_column = pipeline$cluster_column,
-    outputs = pipeline_outputs
-  )
-
-  # Save final object
-  out_rds <- file.path(output_dir, "objects", paste0(params$project_id, "_giotto_object.rds"))
-  saveRDS(pipeline$giotto, out_rds)
-  cli::cli_alert_success("Saved Giotto object: {.path {out_rds}}")
-
-  run_record$pipeline$outputs$giotto_object <- out_rds
-
-  session_path <- file.path(output_dir, "metadata", "session_info.txt")
-  writeLines(capture.output(sessionInfo()), session_path)
-  cli::cli_alert_info("Wrote session info: {.path {session_path}}")
+  run_record$pipeline <- c(run_record$pipeline %||% list(), list(outputs = pipeline_outputs))
 
   run_record$status <- "success"
   run_record$completed_utc <- timestamp_utc()

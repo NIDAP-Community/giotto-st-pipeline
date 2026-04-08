@@ -4,12 +4,28 @@ suppressPackageStartupMessages({
   library(Giotto)
 })
 
-# Run the core Giotto workflow shared between ST modalities.
-run_basic_pipeline <- function(gobj, stats, output_dir, project_id, cores = 4) {
+derive_giotto_stats <- function(gobj, stats = NULL) {
   if (is.null(stats) || is.null(stats$n_genes) || is.null(stats$n_cells)) {
     expr_raw <- methods::slot(gobj, "raw_exprs")
     stats <- list(n_genes = nrow(expr_raw), n_cells = ncol(expr_raw))
   }
+
+  stats
+}
+
+detect_cluster_column <- function(gobj) {
+  cell_meta <- Giotto::pDataDT(gobj)
+  if ("leiden_clus" %in% names(cell_meta)) {
+    return("leiden_clus")
+  }
+  if ("cluster" %in% names(cell_meta)) {
+    return("cluster")
+  }
+  "nr_genes"
+}
+
+run_analysis_pipeline <- function(gobj, stats, cores = 4) {
+  stats <- derive_giotto_stats(gobj, stats)
 
   if (stats$n_genes < 2 || stats$n_cells < 2) {
     cli::cli_abort("At least two genes and two cells are required after ingest (found {stats$n_genes} genes, {stats$n_cells} cells)")
@@ -38,7 +54,7 @@ run_basic_pipeline <- function(gobj, stats, output_dir, project_id, cores = 4) {
     gobj,
     expression_values = "normalized",
     ncp = length(dims_to_use),
-    method = "factominer"
+     method = "irlba"
   )
 
   cli::cli_alert_info("Running UMAP")
@@ -57,14 +73,22 @@ run_basic_pipeline <- function(gobj, stats, output_dir, project_id, cores = 4) {
     }
   )
 
-  cell_meta <- Giotto::pDataDT(gobj)
-  if ("leiden_clus" %in% names(cell_meta)) {
-    cluster_column <- "leiden_clus"
-  } else if ("cluster" %in% names(cell_meta)) {
-    cluster_column <- "cluster"
-  } else {
-    cluster_column <- "nr_genes"
+  cluster_column <- detect_cluster_column(gobj)
+
+  list(
+    giotto = gobj,
+    cluster_column = cluster_column,
+    stats = derive_giotto_stats(gobj, stats)
+  )
+}
+
+export_pipeline_outputs <- function(gobj, stats, output_dir, project_id, cluster_column = NULL) {
+  stats <- derive_giotto_stats(gobj, stats)
+  if (is.null(cluster_column) || !nzchar(cluster_column)) {
+    cluster_column <- detect_cluster_column(gobj)
   }
+
+  cell_meta <- Giotto::pDataDT(gobj)
 
   if (cluster_column %in% names(cell_meta) && anyNA(cell_meta[[cluster_column]])) {
     if (is.numeric(cell_meta[[cluster_column]])) {
@@ -210,6 +234,12 @@ run_basic_pipeline <- function(gobj, stats, output_dir, project_id, cores = 4) {
     )
   )
 
+  out_rds <- file.path(output_dir, "objects", paste0(project_id, "_giotto_object.rds"))
+  saveRDS(gobj, out_rds)
+
+  session_path <- file.path(output_dir, "metadata", "session_info.txt")
+  writeLines(capture.output(sessionInfo()), session_path)
+
   list(
     giotto = gobj,
     cluster_column = cluster_column,
@@ -221,7 +251,21 @@ run_basic_pipeline <- function(gobj, stats, output_dir, project_id, cores = 4) {
       qc_summary = qc_summary_path,
       qc_nr_genes_hist = qc_nr_genes_hist_path,
       qc_total_expr_hist = qc_total_expr_hist_path,
-      qc_genes_vs_expr = qc_scatter_path
+      qc_genes_vs_expr = qc_scatter_path,
+      giotto_object = out_rds,
+      session_info = session_path
     )
+  )
+}
+
+# Run the core Giotto workflow shared between ST modalities.
+run_basic_pipeline <- function(gobj, stats, output_dir, project_id, cores = 4) {
+  analysis <- run_analysis_pipeline(gobj, stats, cores = cores)
+  export_pipeline_outputs(
+    gobj = analysis$giotto,
+    stats = analysis$stats,
+    output_dir = output_dir,
+    project_id = project_id,
+    cluster_column = analysis$cluster_column
   )
 }

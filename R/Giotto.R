@@ -100,11 +100,11 @@ run_xenium_analysis <- function(h5_path) {
   max_dim <- max(2, min(10, nrow(expr_mtx) - 1, length(common_cells) - 1))
   dims_to_use <- seq_len(max_dim)
 
-  gobj <- runPCA(gobj,
-                  expression_values = "normalized",
-                  genes_to_use = NULL,
-                  ncp = max_dim,
-                  method = "factominer")
+    gobj <- runPCA(gobj,
+                    expression_values = "normalized",
+                    genes_to_use = NULL,
+                    ncp = max_dim,
+                    method = "irlba")
   gobj <- runUMAP(gobj, dimensions_to_use = dims_to_use)
   gobj <- createNearestNetwork(gobj, dimensions_to_use = dims_to_use, k = 20)
 

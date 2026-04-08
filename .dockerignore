@@ -1,0 +1,11 @@
+.DS_Store
+.git
+.github
+.RData
+.Rhistory
+*.sif
+*.tar
+giotto_runs
+results
+renv/library
+renv/staging

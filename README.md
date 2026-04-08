@@ -1,6 +1,6 @@
 # Giotto Spatial Transcriptomics Pipeline
 
-Container-ready R workflow for ingesting Xenium and Visium/Visium HD spatial transcriptomics outputs, applying the Giotto analysis toolkit, and exporting reproducible QC artefacts, embeddings, and clustering summaries. The project mirrors the documentation style of other NIDAP Community CAF tools (for example, multi-gene-correlations) while the container build remains in progress.
+Container-ready R workflow for ingesting Xenium and Visium/Visium HD spatial transcriptomics outputs, applying the Giotto analysis toolkit, and exporting reproducible QC artefacts, embeddings, and clustering summaries. The project uses a Container-as-a-Function interface: one stable entrypoint, explicit inputs, explicit outputs, and a consistent `/data` plus `/output` mount contract.
 
 ## Example Outputs
 
@@ -22,6 +22,7 @@ These figures are exported automatically beneath `results/<run_id>/plots/` and `
 - AnnData (`.h5ad`) ingest with automatic discovery of expression matrices (X, layers, raw) and spatial coordinates (obs columns or `obsm['spatial']`)
 - Optional QC filters (e.g., `--min_genes_per_cell`, `--min_total_expr_per_cell`, `--max_mito_pct` with configurable prefixes)
 - Optional `--max_cells` downsampling to trim oversized datasets before Giotto normalization
+- Stage-aware workflow control (`--stage validate|ingest|qc|analyze|export|all`) with checkpointed Giotto objects
 - Giotto-based normalization, dimensionality reduction, and Leiden clustering
 - Structured outputs: cluster tables, spatial and UMAP plots, QC metrics, per-filter QC summary, Giotto object, run metadata
 - Container-as-a-Function execution contract (single entrypoint, explicit inputs/outputs)
@@ -30,47 +31,92 @@ These figures are exported automatically beneath `results/<run_id>/plots/` and `
 ## Current Status
 
 - Local-first execution is working via `scripts/run_all.R`
-- Dockerfile scaffolding exists for off-cluster builds; container image has not been published yet
+- A lean GHCR image is published at `ghcr.io/nidap-community/giotto-st-pipeline:latest`
+- The published image excludes the optional `arrow` package and therefore expects non-parquet Visium metadata
+- A GHCR publish helper is available at `container/publish.sh` using `sha-<git-sha>`, `lean`, and `latest` tags
+- A manual GitHub Actions workflow at `.github/workflows/publish-ghcr.yml` can rebuild and republish the lean image outside the local network path
 - `results/` is ignored by git; generate outputs locally or inside the container and archive externally as needed
 
-## Quick Start (Local)
+## Bind Mount Layout
+
+When running in Docker or Apptainer/Singularity, mount host paths as:
+
+- `/data`: read-only inputs such as Xenium outputs, Visium Spaceranger directories, `.h5ad` files, and config files
+- `/output`: writable results directory
+
+This keeps the container callable like a pure function across Docker and Apptainer/Singularity runtimes.
+
+## Quick Start
+
+The canonical happy path is now the published GHCR image.
 
 ```bash
-git clone https://github.com/NIDAP-Community/giotto-st-pipeline.git
-cd giotto-st-pipeline
-module load R/4.4.3
-Rscript -e 'renv::restore(prompt = FALSE)'
-Rscript scripts/run_all.R \
+docker pull ghcr.io/nidap-community/giotto-st-pipeline:latest
+mkdir -p "$PWD/results/xenium_r1"
+docker run --rm \
+	-v /path/to/xenium:/data:ro \
+	-v "$PWD/results":/output \
+	ghcr.io/nidap-community/giotto-st-pipeline:latest \
+	--stage all \
 	--input_format xenium \
-	--input_dir /data/xenium/output-XETG00202__0024834_Right__SCAF04264_Right_R1__20240912__162834 \
-	--output_dir /data/results/xenium_r1 \
+	--input_dir /data/output-XETG00202__0024834_Right__SCAF04264_Right_R1__20240912__162834 \
+	--output_dir /output/xenium_r1 \
 	--project_id XETG00202_R1
 
 # Visium / Visium HD (Spaceranger outs directory)
-Rscript scripts/run_all.R \
+docker run --rm \
+	-v /path/to/visium-outs:/data:ro \
+	-v "$PWD/results":/output \
+	ghcr.io/nidap-community/giotto-st-pipeline:latest \
+	--stage all \
 	--input_format visium \
-	--input_dir /data/vishd/sample123/outs \
-	--output_dir /data/results/sample123 \
+	--input_dir /data \
+	--output_dir /output/sample123 \
 	--project_id sample123
 
 # AnnData (.h5ad)
-Rscript scripts/run_all.R \
+docker run --rm \
+	-v /path/to/h5ad:/data:ro \
+	-v "$PWD/results":/output \
+	ghcr.io/nidap-community/giotto-st-pipeline:latest \
+	--stage all \
 	--input_format h5ad \
-	--input_path /data/visium/sample123.h5ad \
-	--output_dir /data/results/sample123_h5ad \
+	--input_path /data/sample123.h5ad \
+	--output_dir /output/sample123_h5ad \
 	--project_id sample123_h5ad \
 	--python_path ~/.local/share/r-miniconda/envs/giotto_env/bin/python
 ```
 
-Review `/data/results/xenium_r1/metadata/run_parameters.json` for a structured summary of the run configuration. Adjust `--cores`, `--python_path`, or `--seed` as needed for your environment.
+Review `results/xenium_r1/metadata/run_parameters.json` for a structured summary of the run configuration. Adjust `--cores`, `--python_path`, or `--seed` as needed for your environment. For Apptainer/Singularity pull-and-run commands and local source execution, see [QUICKSTART.md](/Users/maggiec/GitHub/Maggie/NIDAP/Templates/giotto-st-pipeline/QUICKSTART.md).
+
+## Local R Workflow (renv)
+
+`renv` is available, but it is not auto-activated by `.Rprofile`.
+
+```bash
+module load R/4.4.3
+Rscript -e 'install.packages("renv", repos = "https://cloud.r-project.org")'
+Rscript -e 'renv::restore(prompt = FALSE)'
+```
+
+For interactive local work, activate the project library explicitly:
+
+```bash
+R
+source('renv/activate.R')
+```
+
+For non-interactive runs, call `Rscript scripts/run_all.R ...` from the repo root after restoring `renv`.
 
 ## Inputs
 
 | Flag | Description |
 | --- | --- |
+| `--stage` | Workflow stage: `all`, `validate`, `ingest`, `qc`, `analyze`, or `export`. Default is `all`. |
 | `--input_format` | Choose `xenium`, `visium`, or `h5ad` explicitly (default `auto` infers from directory structure or file extension). |
 | `--input_dir` | Standardized ST input directory (Xenium `cell_feature_matrix.h5` + cells CSV; Visium/Visium HD Spaceranger `outs/`). |
 | `--input_path` | Direct path to a single-file input (currently `.h5ad`). Ignored for directory-based formats. |
+| `--input_object` | Existing Giotto object RDS used as input for `qc`, `analyze`, or `export` stages. |
 | `--max_cells` | Randomly subsample cells/spots before analysis (helpful for Visium HD on memory-constrained nodes). |
 | `--min_genes_per_cell` | Drop cells whose detected genes fall below this integer threshold prior to normalization. |
 | `--min_total_expr_per_cell` | Drop cells whose total expression counts fall below this integer threshold. |
@@ -83,6 +129,8 @@ Review `/data/results/xenium_r1/metadata/run_parameters.json` for a structured s
 | `--dry_run` | Validate inputs (including `.h5ad` content) and exit before running the Giotto workflow. |
 
 When ingesting Visium HD outputs, install the R `arrow` package via `renv::install('arrow')` (or provide a CSV tissue positions file) so parquet spatial metadata can be parsed. For very high-resolution Visium HD runs (hundreds of thousands of spots), use `--max_cells` (e.g., `--max_cells 4000`) or schedule the job on a compute node to avoid login-node OOM kills. Matrix-format ingest remains TODO.
+
+The published lean GHCR image assumes non-parquet Visium metadata at runtime. For container usage, prefer CSV tissue-position files rather than parquet inputs unless and until a fuller image variant is released.
 
 Visium runs generated by Spaceranger sometimes package spatial assets inside `*spatial*.zip`; the pipeline now unpacks these archives automatically into a temporary directory during ingest.
 
@@ -99,7 +147,10 @@ results/<project_id>/
 │   ├── session_info.txt
 │   └── <project_id>_filter_summary.csv
 ├── objects/
-│   └── <project_id>_giotto_object.rds
+│   ├── <project_id>_ingested_giotto.rds      # stage=ingest
+│   ├── <project_id>_qc_giotto.rds            # stage=qc
+│   ├── <project_id>_analyzed_giotto.rds      # stage=analyze
+│   └── <project_id>_giotto_object.rds        # stage=export or stage=all
 ├── qc/
 │   ├── <project_id>_qc_metrics.csv
 │   ├── <project_id>_qc_summary.txt
@@ -113,15 +164,23 @@ results/<project_id>/
 		└── clusters.csv
 ```
 
-When executed inside the forthcoming container the same directory layout will be written under the mounted `--output_dir`.
+When executed inside the published container the same directory layout will be written under the mounted `--output_dir`.
 
-## Container Build (off-cluster)
+For restartable workflow execution, run earlier stages once, then pass the saved object to later stages with `--input_object`.
+
+## Container Build (source rebuilds)
 
 1. Restore the R environment locally (`renv::restore()`)
 2. Build the image on a workstation with Docker:
 
 ```bash
 ./container/build.sh giotto-st-pipeline:dev
+```
+
+On Apple Silicon, pass the target platform explicitly when needed:
+
+```bash
+./container/build.sh giotto-st-pipeline:dev --platform linux/amd64
 ```
 
 3. Optionally export to a tarball and convert to `.sif` for Apptainer/Singularity:
@@ -131,19 +190,25 @@ docker save giotto-st-pipeline:dev -o giotto-st-pipeline.tar
 singularity build giotto-st-pipeline.sif docker-archive://giotto-st-pipeline.tar
 ```
 
-HPC environments without Docker should rely on pre-built `.sif` artefacts generated off-cluster.
+HPC environments without Docker should rely on the published GHCR image or pre-built `.sif` artefacts generated off-cluster.
+
+For standardized Apptainer/Singularity binds, use `container/run_apptainer.sh` with `DATA_DIR` and `OUTPUT_DIR` environment variables.
+
+If you are only consuming the published GHCR image, you should not need to manage enterprise CA certificates locally. Enterprise CA handling is only relevant when rebuilding the image from source behind a TLS-inspecting proxy.
+
+For GHCR publication details, including tag conventions and Docker login requirements, see [container/README.md](/Users/maggiec/GitHub/Maggie/NIDAP/Templates/giotto-st-pipeline/container/README.md).
 
 ## Reproducible Environment
 
 - `renv.lock` pins CRAN, Bioconductor, and GitHub package revisions (Giotto and spatstat suites)
-- `.Rprofile` auto-activates renv for interactive sessions (`source("renv/activate.R")`)
+- `.Rprofile` does not auto-activate renv; activate it explicitly with `source("renv/activate.R")` for local interactive sessions
 - System dependencies required for compiled R packages are documented in `container/Dockerfile`
 
 Use `renv::status()` before committing dependency changes to ensure the lockfile stays current.
 
 ## Roadmap
 
-- Finalize container build and publish GHCR image
 - Add matrix-format ingest helper
+- Decide whether to publish a second fuller image variant with parquet-enabled Visium support
 - Automate lightweight tests under `tests/`
 - Document example configs under `configs/`
