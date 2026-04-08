@@ -41,6 +41,7 @@ RUN apt-get update \
     libfribidi-dev \
     libgdal-dev \
     libgeos-dev \
+    libgmp3-dev \
     libglpk-dev \
     libgsl-dev \
     libharfbuzz-dev \
@@ -52,6 +53,7 @@ RUN apt-get update \
     libtiff5-dev \
     libudunits2-dev \
     libxml2-dev \
+    pandoc \
     pkg-config \
     python3 \
     python3-venv \
