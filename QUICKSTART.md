@@ -1,11 +1,19 @@
 # Quickstart
 
-Use the published GHCR image for the fastest first run. The image is a lean build, so Visium runs should use CSV tissue-position metadata rather than parquet.
+Use the published GHCR image for the fastest first run.
 
 1. Pull the published image:
 
 	```bash
 	docker pull ghcr.io/nidap-community/giotto-st-pipeline:latest
+	```
+
+	For reproducible research, replace `latest` with an immutable source tag or
+	image digest:
+
+	```bash
+	docker pull ghcr.io/nidap-community/giotto-st-pipeline:sha-<full-git-sha>
+	docker pull ghcr.io/nidap-community/giotto-st-pipeline@sha256:<image-digest>
 	```
 
 2. Run a Xenium dataset by mounting inputs at `/data` and results at `/output`:
@@ -97,4 +105,4 @@ Use the published GHCR image for the fastest first run. The image is a lean buil
 	Rscript -e 'renv::restore(prompt = FALSE)'
 	```
 
-Re-run with adjusted thresholds (`--min_genes_per_cell`, `--min_total_expr_per_cell`, `--max_mito_pct`) or a different `--max_cells` value to tune QC and runtime for each dataset.
+Re-run with adjusted thresholds (`--min_genes_per_cell`, `--min_total_expr_per_cell`, `--max_mito_pct`), a different `--max_cells` value, plot sizes (`--spatial_point_size`, `--umap_point_size`, `--spatial_legend_text`, `--spatial_axis_title`), or analysis settings (`--pca_dims`, `--neighbor_k`, `--cluster_resolution`) to tune QC, runtime, and readability for each dataset.

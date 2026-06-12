@@ -85,6 +85,43 @@ normalize_params <- function(params) {
     cli::cli_abort("Invalid {.var --cores} value: {params$cores}")
   }
 
+  params$spatial_point_size <- suppressWarnings(as.numeric(params$spatial_point_size %||% 2.25))
+  if (is.na(params$spatial_point_size) || params$spatial_point_size <= 0) {
+    cli::cli_abort("Invalid {.var --spatial_point_size} value: {params$spatial_point_size}. Use a positive number.")
+  }
+  params$umap_point_size <- suppressWarnings(as.numeric(params$umap_point_size %||% 1.5))
+  if (is.na(params$umap_point_size) || params$umap_point_size <= 0) {
+    cli::cli_abort("Invalid {.var --umap_point_size} value: {params$umap_point_size}. Use a positive number.")
+  }
+  params$spatial_legend_text <- suppressWarnings(as.numeric(params$spatial_legend_text %||% 12))
+  if (is.na(params$spatial_legend_text) || params$spatial_legend_text <= 0) {
+    cli::cli_abort("Invalid {.var --spatial_legend_text} value: {params$spatial_legend_text}. Use a positive number.")
+  }
+  params$spatial_legend_symbol_size <- suppressWarnings(as.numeric(params$spatial_legend_symbol_size %||% 1.4))
+  if (is.na(params$spatial_legend_symbol_size) || params$spatial_legend_symbol_size <= 0) {
+    cli::cli_abort("Invalid {.var --spatial_legend_symbol_size} value: {params$spatial_legend_symbol_size}. Use a positive number.")
+  }
+  params$spatial_axis_text <- suppressWarnings(as.numeric(params$spatial_axis_text %||% 12))
+  if (is.na(params$spatial_axis_text) || params$spatial_axis_text <= 0) {
+    cli::cli_abort("Invalid {.var --spatial_axis_text} value: {params$spatial_axis_text}. Use a positive number.")
+  }
+  params$spatial_axis_title <- suppressWarnings(as.numeric(params$spatial_axis_title %||% 12))
+  if (is.na(params$spatial_axis_title) || params$spatial_axis_title <= 0) {
+    cli::cli_abort("Invalid {.var --spatial_axis_title} value: {params$spatial_axis_title}. Use a positive number.")
+  }
+  params$pca_dims <- suppressWarnings(as.integer(params$pca_dims %||% 10))
+  if (is.na(params$pca_dims) || params$pca_dims < 2) {
+    cli::cli_abort("Invalid {.var --pca_dims} value: {params$pca_dims}. Use an integer of 2 or greater.")
+  }
+  params$neighbor_k <- suppressWarnings(as.integer(params$neighbor_k %||% 20))
+  if (is.na(params$neighbor_k) || params$neighbor_k < 1) {
+    cli::cli_abort("Invalid {.var --neighbor_k} value: {params$neighbor_k}. Use a positive integer.")
+  }
+  params$cluster_resolution <- suppressWarnings(as.numeric(params$cluster_resolution %||% 0.4))
+  if (is.na(params$cluster_resolution) || params$cluster_resolution <= 0) {
+    cli::cli_abort("Invalid {.var --cluster_resolution} value: {params$cluster_resolution}. Use a positive number.")
+  }
+
   valid_stages <- c("all", "validate", "ingest", "qc", "analyze", "export")
   if (!params$stage %in% valid_stages) {
     cli::cli_abort("Invalid {.var --stage} value: {params$stage}. Use one of {paste(valid_stages, collapse = ', ')}")
@@ -272,6 +309,24 @@ parse_args <- function() {
                help = "Path to Python binary for Giotto (optional)."),
       optparse$make_option(c("--cores"), type = "integer", default = 4,
                help = "Number of cores to use (default: 4)."),
+      optparse$make_option(c("--spatial_point_size"), type = "double", default = 2.25,
+                           help = "Dot size for exported spatial map (default: 2.25)."),
+      optparse$make_option(c("--umap_point_size"), type = "double", default = 1.5,
+                           help = "Dot size for exported UMAP plot (default: 1.5)."),
+      optparse$make_option(c("--spatial_legend_text"), type = "double", default = 12,
+                           help = "Legend text size for exported spatial map (default: 12)."),
+      optparse$make_option(c("--spatial_legend_symbol_size"), type = "double", default = 1.4,
+                           help = "Legend symbol size for exported spatial map (default: 1.4)."),
+      optparse$make_option(c("--spatial_axis_text"), type = "double", default = 12,
+                           help = "Axis tick text size for exported spatial map (default: 12)."),
+      optparse$make_option(c("--spatial_axis_title"), type = "double", default = 12,
+                           help = "Axis title size for exported spatial map (default: 12)."),
+      optparse$make_option(c("--pca_dims"), type = "integer", default = 10,
+                           help = "Maximum number of PCA dimensions to use for UMAP and clustering (default: 10)."),
+      optparse$make_option(c("--neighbor_k"), type = "integer", default = 20,
+                           help = "Nearest-neighbor graph k before clustering (default: 20; capped at cells - 1)."),
+      optparse$make_option(c("--cluster_resolution"), type = "double", default = 0.4,
+                           help = "Leiden clustering resolution (default: 0.4)."),
       optparse$make_option(c("--seed"), type = "integer", default = 1,
                            help = "Random seed for reproducibility."),
       optparse$make_option(c("--max_cells"), type = "integer", default = NA,
@@ -400,7 +455,16 @@ run_pipeline <- function(gobj, params, stats) {
     stats = stats,
     output_dir = params$output_dir,
     project_id = params$project_id,
-    cores = params$cores
+    cores = params$cores,
+    spatial_point_size = params$spatial_point_size,
+    umap_point_size = params$umap_point_size,
+    spatial_legend_text = params$spatial_legend_text,
+    spatial_legend_symbol_size = params$spatial_legend_symbol_size,
+    spatial_axis_text = params$spatial_axis_text,
+    spatial_axis_title = params$spatial_axis_title,
+    pca_dims = params$pca_dims,
+    neighbor_k = params$neighbor_k,
+    cluster_resolution = params$cluster_resolution
   )
 }
 
@@ -811,7 +875,14 @@ main <- function() {
 
   if (params$stage %in% c("all", "analyze")) {
     cli::cli_h1("Run analysis")
-    analysis <- run_analysis_pipeline(ingest$giotto, ingest$stats, cores = params$cores)
+    analysis <- run_analysis_pipeline(
+      ingest$giotto,
+      ingest$stats,
+      cores = params$cores,
+      pca_dims = params$pca_dims,
+      neighbor_k = params$neighbor_k,
+      cluster_resolution = params$cluster_resolution
+    )
     ingest$giotto <- analysis$giotto
     ingest$stats <- analysis$stats
     run_record$pipeline <- list(cluster_column = analysis$cluster_column)
@@ -833,7 +904,13 @@ main <- function() {
     stats = ingest$stats,
     output_dir = output_dir,
     project_id = params$project_id,
-    cluster_column = run_record$pipeline$cluster_column %||% NULL
+    cluster_column = run_record$pipeline$cluster_column %||% NULL,
+    spatial_point_size = params$spatial_point_size,
+    umap_point_size = params$umap_point_size,
+    spatial_legend_text = params$spatial_legend_text,
+    spatial_legend_symbol_size = params$spatial_legend_symbol_size,
+    spatial_axis_text = params$spatial_axis_text,
+    spatial_axis_title = params$spatial_axis_title
   )
   pipeline_outputs <- pipeline$outputs %||% list()
 

@@ -24,11 +24,25 @@ detect_cluster_column <- function(gobj) {
   "nr_genes"
 }
 
-run_analysis_pipeline <- function(gobj, stats, cores = 4) {
+run_analysis_pipeline <- function(gobj, stats, cores = 4, pca_dims = 10, neighbor_k = 20, cluster_resolution = 0.4) {
   stats <- derive_giotto_stats(gobj, stats)
 
   if (stats$n_genes < 2 || stats$n_cells < 2) {
-    cli::cli_abort("At least two genes and two cells are required after ingest (found {stats$n_genes} genes, {stats$n_cells} cells)")
+    cli::cli_abort(
+      "At least two genes and two cells are required after ingest (found {stats$n_genes} genes, {stats$n_cells} cells)"
+    )
+  }
+  pca_dims <- as.integer(pca_dims)
+  neighbor_k <- as.integer(neighbor_k)
+  cluster_resolution <- as.numeric(cluster_resolution)
+  if (is.na(pca_dims) || pca_dims < 2) {
+    cli::cli_abort("Invalid PCA dimensions: {pca_dims}. Use an integer of 2 or greater.")
+  }
+  if (is.na(neighbor_k) || neighbor_k < 1) {
+    cli::cli_abort("Invalid nearest-neighbor k: {neighbor_k}. Use a positive integer.")
+  }
+  if (is.na(cluster_resolution) || cluster_resolution <= 0) {
+    cli::cli_abort("Invalid Leiden cluster resolution: {cluster_resolution}. Use a positive number.")
   }
 
   cli::cli_alert_info("Normalizing expression values")
@@ -45,7 +59,7 @@ run_analysis_pipeline <- function(gobj, stats, cores = 4) {
     cell_meta[is.na(total_expr), total_expr := 0]
   }
 
-  ncp <- min(10, stats$n_genes, stats$n_cells)
+  ncp <- min(pca_dims, stats$n_genes, stats$n_cells)
   ncp <- max(2, ncp)
   dims_to_use <- seq_len(ncp)
 
@@ -54,21 +68,31 @@ run_analysis_pipeline <- function(gobj, stats, cores = 4) {
     gobj,
     expression_values = "normalized",
     ncp = length(dims_to_use),
-     method = "irlba"
+    method = "irlba"
   )
 
   cli::cli_alert_info("Running UMAP")
-  gobj <- Giotto::runUMAP(gobj, dimensions_to_use = dims_to_use)
+  gobj <- Giotto::runUMAP(
+    gobj,
+    dimensions_to_use = dims_to_use,
+    n_threads = cores
+  )
 
   cli::cli_alert_info("Creating nearest-neighbour graph")
-  k_neigh <- max(1, min(20, stats$n_cells - 1))
-  gobj <- Giotto::createNearestNetwork(gobj, dimensions_to_use = dims_to_use, k = k_neigh)
+  k_neigh <- max(1, min(neighbor_k, stats$n_cells - 1))
+  gobj <- Giotto::createNearestNetwork(
+    gobj,
+    dimensions_to_use = dims_to_use,
+    k = k_neigh
+  )
 
   cli::cli_alert_info("Running Leiden clustering")
   gobj <- tryCatch(
-    Giotto::doLeidenCluster(gobj, resolution = 0.4),
+    Giotto::doLeidenCluster(gobj, resolution = cluster_resolution),
     error = function(e) {
-      cli::cli_warn("Leiden clustering failed: {conditionMessage(e)}; continuing without clusters")
+      cli::cli_warn(
+        "Leiden clustering failed: {conditionMessage(e)}; continuing without clusters"
+      )
       gobj
     }
   )
@@ -82,15 +106,53 @@ run_analysis_pipeline <- function(gobj, stats, cores = 4) {
   )
 }
 
-export_pipeline_outputs <- function(gobj, stats, output_dir, project_id, cluster_column = NULL) {
+export_pipeline_outputs <- function(
+  gobj,
+  stats,
+  output_dir,
+  project_id,
+  cluster_column = NULL,
+  spatial_point_size = 2.25,
+  umap_point_size = 1.5,
+  spatial_legend_text = 12,
+  spatial_legend_symbol_size = 1.4,
+  spatial_axis_text = 12,
+  spatial_axis_title = 12
+) {
   stats <- derive_giotto_stats(gobj, stats)
   if (is.null(cluster_column) || !nzchar(cluster_column)) {
     cluster_column <- detect_cluster_column(gobj)
   }
+  spatial_point_size <- as.numeric(spatial_point_size)
+  if (is.na(spatial_point_size) || spatial_point_size <= 0) {
+    cli::cli_abort("Invalid spatial point size: {spatial_point_size}. Use a positive number.")
+  }
+  umap_point_size <- as.numeric(umap_point_size)
+  if (is.na(umap_point_size) || umap_point_size <= 0) {
+    cli::cli_abort("Invalid UMAP point size: {umap_point_size}. Use a positive number.")
+  }
+  spatial_legend_text <- as.numeric(spatial_legend_text)
+  if (is.na(spatial_legend_text) || spatial_legend_text <= 0) {
+    cli::cli_abort("Invalid spatial legend text size: {spatial_legend_text}. Use a positive number.")
+  }
+  spatial_legend_symbol_size <- as.numeric(spatial_legend_symbol_size)
+  if (is.na(spatial_legend_symbol_size) || spatial_legend_symbol_size <= 0) {
+    cli::cli_abort("Invalid spatial legend symbol size: {spatial_legend_symbol_size}. Use a positive number.")
+  }
+  spatial_axis_text <- as.numeric(spatial_axis_text)
+  if (is.na(spatial_axis_text) || spatial_axis_text <= 0) {
+    cli::cli_abort("Invalid spatial axis text size: {spatial_axis_text}. Use a positive number.")
+  }
+  spatial_axis_title <- as.numeric(spatial_axis_title)
+  if (is.na(spatial_axis_title) || spatial_axis_title <= 0) {
+    cli::cli_abort("Invalid spatial axis title size: {spatial_axis_title}. Use a positive number.")
+  }
 
   cell_meta <- Giotto::pDataDT(gobj)
 
-  if (cluster_column %in% names(cell_meta) && anyNA(cell_meta[[cluster_column]])) {
+  if (
+    cluster_column %in% names(cell_meta) && anyNA(cell_meta[[cluster_column]])
+  ) {
     if (is.numeric(cell_meta[[cluster_column]])) {
       cell_meta[is.na(get(cluster_column)), (cluster_column) := 0]
     } else {
@@ -113,8 +175,16 @@ export_pipeline_outputs <- function(gobj, stats, output_dir, project_id, cluster
 
   # Basic QC summaries before downstream embedding
   qc_prefix <- file.path(qc_dir, paste0(project_id, "_"))
-  nr_genes <- if ("nr_genes" %in% names(cell_meta)) cell_meta$nr_genes else rep(NA_real_, nrow(cell_meta))
-  total_expr <- if ("total_expr" %in% names(cell_meta)) cell_meta$total_expr else rep(NA_real_, nrow(cell_meta))
+  nr_genes <- if ("nr_genes" %in% names(cell_meta)) {
+    cell_meta$nr_genes
+  } else {
+    rep(NA_real_, nrow(cell_meta))
+  }
+  total_expr <- if ("total_expr" %in% names(cell_meta)) {
+    cell_meta$total_expr
+  } else {
+    rep(NA_real_, nrow(cell_meta))
+  }
   qc_metrics <- data.table::data.table(
     metric = c(
       "cells_total",
@@ -147,14 +217,31 @@ export_pipeline_outputs <- function(gobj, stats, output_dir, project_id, cluster
 
   qc_nr_genes_hist_path <- paste0(qc_prefix, "nr_genes_hist.png")
   grDevices::png(qc_nr_genes_hist_path, width = 1600, height = 1200, res = 200)
-  hist(nr_genes, breaks = 50, col = "steelblue", border = "white",
-       main = "Detected genes per cell", xlab = "Number of genes")
+  hist(
+    nr_genes,
+    breaks = 50,
+    col = "steelblue",
+    border = "white",
+    main = "Detected genes per cell",
+    xlab = "Number of genes"
+  )
   grDevices::dev.off()
 
   qc_total_expr_hist_path <- paste0(qc_prefix, "total_expr_hist.png")
-  grDevices::png(qc_total_expr_hist_path, width = 1600, height = 1200, res = 200)
-  hist(total_expr, breaks = 50, col = "darkseagreen", border = "white",
-       main = "Total expression counts per cell", xlab = "Total expression")
+  grDevices::png(
+    qc_total_expr_hist_path,
+    width = 1600,
+    height = 1200,
+    res = 200
+  )
+  hist(
+    total_expr,
+    breaks = 50,
+    col = "darkseagreen",
+    border = "white",
+    main = "Total expression counts per cell",
+    xlab = "Total expression"
+  )
   grDevices::dev.off()
 
   qc_scatter_path <- paste0(qc_prefix, "genes_vs_expr.png")
@@ -178,23 +265,40 @@ export_pipeline_outputs <- function(gobj, stats, output_dir, project_id, cluster
   low_gene_pct <- qc_metrics[metric == "pct_cells_lt_200_genes", value]
   low_expr_pct <- qc_metrics[metric == "pct_cells_lt_500_total_expr", value]
   qc_notes <- c(
-    sprintf("Cells analysed: %d; genes quantified: %d.", stats$n_cells, stats$n_genes),
+    sprintf(
+      "Cells analysed: %d; genes quantified: %d.",
+      stats$n_cells,
+      stats$n_genes
+    ),
     sprintf(
       "Genes/cell median %.0f (IQR %.0f-%.0f).",
-      genes_q[["50%"]], genes_q[["25%"]], genes_q[["75%"]]
+      genes_q[["50%"]],
+      genes_q[["25%"]],
+      genes_q[["75%"]]
     ),
     sprintf(
       "Total expression/cell median %.0f (IQR %.0f-%.0f).",
-      expr_q[["50%"]], expr_q[["25%"]], expr_q[["75%"]]
+      expr_q[["50%"]],
+      expr_q[["25%"]],
+      expr_q[["75%"]]
     ),
     sprintf("%.1f%% of cells fall below 200 genes per cell.", low_gene_pct),
-    sprintf("%.1f%% of cells fall below 500 total expression counts.", low_expr_pct)
+    sprintf(
+      "%.1f%% of cells fall below 500 total expression counts.",
+      low_expr_pct
+    )
   )
   if (!is.na(low_gene_pct) && low_gene_pct > 10) {
-    qc_notes <- c(qc_notes, "Consider tightening filtering thresholds; low-complexity cells exceed 10%.")
+    qc_notes <- c(
+      qc_notes,
+      "Consider tightening filtering thresholds; low-complexity cells exceed 10%."
+    )
   }
   if (!is.na(low_expr_pct) && low_expr_pct > 10) {
-    qc_notes <- c(qc_notes, "Expression depth shows a sizeable low-count tail; review sequencing depth or cell filtering.")
+    qc_notes <- c(
+      qc_notes,
+      "Expression depth shows a sizeable low-count tail; review sequencing depth or cell filtering."
+    )
   }
   writeLines(qc_notes, qc_summary_path)
 
@@ -212,6 +316,11 @@ export_pipeline_outputs <- function(gobj, stats, output_dir, project_id, cluster
     show_image = FALSE,
     show_plot = FALSE,
     cell_color = cluster_column,
+    point_size = spatial_point_size,
+    legend_text = spatial_legend_text,
+    legend_symbol_size = spatial_legend_symbol_size,
+    axis_text = spatial_axis_text,
+    axis_title = spatial_axis_title,
     save_plot = TRUE,
     save_param = list(
       save_dir = plots_dir,
@@ -224,7 +333,7 @@ export_pipeline_outputs <- function(gobj, stats, output_dir, project_id, cluster
   Giotto::plotUMAP(
     gobj,
     cell_color = cluster_column,
-    point_size = 1.5,
+    point_size = umap_point_size,
     show_plot = FALSE,
     save_plot = TRUE,
     save_param = list(
@@ -234,7 +343,11 @@ export_pipeline_outputs <- function(gobj, stats, output_dir, project_id, cluster
     )
   )
 
-  out_rds <- file.path(output_dir, "objects", paste0(project_id, "_giotto_object.rds"))
+  out_rds <- file.path(
+    output_dir,
+    "objects",
+    paste0(project_id, "_giotto_object.rds")
+  )
   saveRDS(gobj, out_rds)
 
   session_path <- file.path(output_dir, "metadata", "session_info.txt")
@@ -259,13 +372,41 @@ export_pipeline_outputs <- function(gobj, stats, output_dir, project_id, cluster
 }
 
 # Run the core Giotto workflow shared between ST modalities.
-run_basic_pipeline <- function(gobj, stats, output_dir, project_id, cores = 4) {
-  analysis <- run_analysis_pipeline(gobj, stats, cores = cores)
+run_basic_pipeline <- function(
+  gobj,
+  stats,
+  output_dir,
+  project_id,
+  cores = 4,
+  spatial_point_size = 2.25,
+  umap_point_size = 1.5,
+  spatial_legend_text = 12,
+  spatial_legend_symbol_size = 1.4,
+  spatial_axis_text = 12,
+  spatial_axis_title = 12,
+  pca_dims = 10,
+  neighbor_k = 20,
+  cluster_resolution = 0.4
+) {
+  analysis <- run_analysis_pipeline(
+    gobj,
+    stats,
+    cores = cores,
+    pca_dims = pca_dims,
+    neighbor_k = neighbor_k,
+    cluster_resolution = cluster_resolution
+  )
   export_pipeline_outputs(
     gobj = analysis$giotto,
     stats = analysis$stats,
     output_dir = output_dir,
     project_id = project_id,
-    cluster_column = analysis$cluster_column
+    cluster_column = analysis$cluster_column,
+    spatial_point_size = spatial_point_size,
+    umap_point_size = umap_point_size,
+    spatial_legend_text = spatial_legend_text,
+    spatial_legend_symbol_size = spatial_legend_symbol_size,
+    spatial_axis_text = spatial_axis_text,
+    spatial_axis_title = spatial_axis_title
   )
 }

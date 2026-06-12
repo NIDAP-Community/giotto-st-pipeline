@@ -9,6 +9,7 @@ fi
 IMMUTABLE_TAG=""
 PUBLISH_FLOATING_TAGS=true
 DRY_RUN=false
+ALLOW_DIRTY=false
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -24,8 +25,12 @@ while [[ $# -gt 0 ]]; do
 			DRY_RUN=true
 			shift
 			;;
+		--allow-dirty)
+			ALLOW_DIRTY=true
+			shift
+			;;
 		*)
-			echo "Usage: ./container/publish.sh [local-image] [--immutable-tag <tag>] [--no-floating-tags] [--dry-run]" >&2
+			echo "Usage: ./container/publish.sh [local-image] [--immutable-tag <tag>] [--no-floating-tags] [--dry-run] [--allow-dirty]" >&2
 			exit 1
 			;;
 	esac
@@ -37,10 +42,18 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 GHCR_OWNER=${GHCR_OWNER:-nidap-community}
 GHCR_IMAGE_NAME=${GHCR_IMAGE_NAME:-giotto-st-pipeline}
 REMOTE_BASE="ghcr.io/${GHCR_OWNER}/${GHCR_IMAGE_NAME}"
+CURRENT_GIT_SHA=$(git -C "${REPO_ROOT}" rev-parse HEAD)
+CURRENT_RENV_LOCK_SHA256=$(shasum -a 256 "${REPO_ROOT}/renv.lock" | awk '{ print $1 }')
 
 if [[ -z "${IMMUTABLE_TAG}" ]]; then
-	GIT_SHA=$(git -C "${REPO_ROOT}" rev-parse --short HEAD)
-	IMMUTABLE_TAG="sha-${GIT_SHA}"
+	IMMUTABLE_TAG="sha-${CURRENT_GIT_SHA}"
+fi
+
+if [[ "${ALLOW_DIRTY}" != true ]] && [[ -n "$(git -C "${REPO_ROOT}" status --porcelain)" ]]; then
+	echo "Refusing to publish from a dirty worktree." >&2
+	echo "Commit the exact source state first so ${IMMUTABLE_TAG} matches the source and renv.lock used to build the image." >&2
+	echo "For an explicitly non-reproducible test publish, rerun with --allow-dirty and a custom --immutable-tag." >&2
+	exit 1
 fi
 
 LOCAL_IMAGE_ID=$(docker images --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk -v ref="${LOCAL_IMAGE}" '$1 == ref { print $2; exit }')
@@ -51,9 +64,23 @@ if [[ -z "${LOCAL_IMAGE_ID}" ]]; then
 	exit 1
 fi
 
+if [[ "${ALLOW_DIRTY}" != true ]]; then
+	IMAGE_SOURCE_COMMIT=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${LOCAL_IMAGE_ID}" 2>/dev/null || true)
+	IMAGE_RENV_LOCK_SHA256=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.renv-lock-sha256" }}' "${LOCAL_IMAGE_ID}" 2>/dev/null || true)
+	if [[ "${IMAGE_SOURCE_COMMIT}" != "${CURRENT_GIT_SHA}" ]] || [[ "${IMAGE_RENV_LOCK_SHA256}" != "${CURRENT_RENV_LOCK_SHA256}" ]]; then
+		echo "Refusing to publish: local image metadata does not match the current committed source." >&2
+		echo "Expected source revision: ${CURRENT_GIT_SHA}" >&2
+		echo "Image source revision:    ${IMAGE_SOURCE_COMMIT:-<missing>}" >&2
+		echo "Expected renv.lock SHA:   ${CURRENT_RENV_LOCK_SHA256}" >&2
+		echo "Image renv.lock SHA:      ${IMAGE_RENV_LOCK_SHA256:-<missing>}" >&2
+		echo "Rebuild with ./container/build.sh ${LOCAL_IMAGE}, then publish again." >&2
+		exit 1
+	fi
+fi
+
 tags=("${IMMUTABLE_TAG}")
 if [[ "${PUBLISH_FLOATING_TAGS}" == true ]]; then
-	tags+=("lean" "latest")
+	tags+=("latest")
 fi
 
 echo "Local image: ${LOCAL_IMAGE}"
@@ -62,12 +89,15 @@ echo "Remote image: ${REMOTE_BASE}"
 printf 'Tags to publish:\n'
 for tag in "${tags[@]}"; do
 	echo "  - ${tag}"
-	docker tag "${LOCAL_IMAGE_ID}" "${REMOTE_BASE}:${tag}"
 done
 
 if [[ "${DRY_RUN}" == true ]]; then
 	exit 0
 fi
+
+for tag in "${tags[@]}"; do
+	docker tag "${LOCAL_IMAGE_ID}" "${REMOTE_BASE}:${tag}"
+done
 
 for tag in "${tags[@]}"; do
 	docker push "${REMOTE_BASE}:${tag}"

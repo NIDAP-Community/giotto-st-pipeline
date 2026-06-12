@@ -259,6 +259,15 @@ ingest_visium_hd <- function(input_dir, output_dir, project_id = NULL, python_pa
   }
 
   spatial_dt <- read_visium_spatial(layout$spatial$path)
+  if ("in_tissue" %in% names(spatial_dt)) {
+    in_tissue <- tolower(as.character(spatial_dt$in_tissue))
+    keep_tissue <- in_tissue %in% c("1", "true", "t", "yes", "y")
+    if (any(keep_tissue, na.rm = TRUE)) {
+      spatial_dt <- spatial_dt[keep_tissue]
+    } else {
+      cli::cli_warn("Column {.field in_tissue} was present but no tissue spots were marked; retaining all spatial barcodes.")
+    }
+  }
 
   common_cells <- intersect(colnames(expr_mtx), spatial_dt$cell_id)
   if (length(common_cells) == 0) {
@@ -269,6 +278,12 @@ ingest_visium_hd <- function(input_dir, output_dir, project_id = NULL, python_pa
 
   expr_mtx <- expr_mtx[, common_cells, drop = FALSE]
   spatial_dt <- spatial_dt[common_cells]
+  keep_genes <- Matrix::rowSums(expr_mtx) > 0
+  if (!all(keep_genes)) {
+    removed_genes <- sum(!keep_genes)
+    cli::cli_alert_info("Dropping {removed_genes} all-zero genes after spatial barcode matching")
+    expr_mtx <- expr_mtx[keep_genes, , drop = FALSE]
+  }
 
   # Prepare instructions (save plots off by default; pipeline will handle plotting)
   if (!dir.exists(output_dir)) {

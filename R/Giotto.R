@@ -23,6 +23,15 @@ suppressPackageStartupMessages({
 
 data_root <- "/data/STAG/data"
 results_root <- file.path(getwd(), "giotto_runs")
+spatial_point_size <- 2.25
+umap_point_size <- 1.5
+spatial_legend_text <- 12
+spatial_legend_symbol_size <- 1.4
+spatial_axis_text <- 12
+spatial_axis_title <- 12
+pca_dims <- 10
+neighbor_k <- 20
+cluster_resolution <- 0.4
 if (!dir.exists(results_root)) dir.create(results_root, recursive = TRUE)
 
 output_dirs <- list.dirs(data_root, recursive = FALSE, full.names = TRUE)
@@ -52,8 +61,10 @@ run_xenium_analysis <- function(h5_path) {
   spatial_meta <- fread(cells_file)
   required_cols <- c("cell_id", "x_centroid", "y_centroid")
   if (!all(required_cols %in% names(spatial_meta))) {
-    stop("cells table for ", run_id, " lacks required columns: ",
-         paste(setdiff(required_cols, names(spatial_meta)), collapse = ", "))
+    stop(
+      "cells table for ", run_id, " lacks required columns: ",
+      paste(setdiff(required_cols, names(spatial_meta)), collapse = ", ")
+    )
   }
 
   expr_list <- get10Xmatrix_h5(h5_path)
@@ -76,15 +87,19 @@ run_xenium_analysis <- function(h5_path) {
   run_dir <- file.path(results_root, run_id)
   if (!dir.exists(run_dir)) dir.create(run_dir, recursive = TRUE)
 
-  instr <- createGiottoInstructions(save_dir = run_dir,
-                                    save_plot = TRUE,
-                                    show_plot = FALSE,
-                                    python_path = python_path)
+  instr <- createGiottoInstructions(
+    save_dir = run_dir,
+    save_plot = TRUE,
+    show_plot = FALSE,
+    python_path = python_path
+  )
 
-  gobj <- createGiottoObject(raw_exprs = expr_mtx,
-                             spatial_locs = spatial_meta[, .(cell_ID, sdimx, sdimy)],
-                             instructions = instr,
-                             cores = 4)
+  gobj <- createGiottoObject(
+    raw_exprs = expr_mtx,
+    spatial_locs = spatial_meta[, .(cell_ID, sdimx, sdimy)],
+    instructions = instr,
+    cores = 4
+  )
 
   gobj <- normalizeGiotto(gobj, scalefactor = 6000)
   gobj <- addStatistics(gobj)
@@ -97,23 +112,28 @@ run_xenium_analysis <- function(h5_path) {
     cell_meta[is.na(total_expr), total_expr := 0]
   }
 
-  max_dim <- max(2, min(10, nrow(expr_mtx) - 1, length(common_cells) - 1))
+  max_dim <- max(2, min(pca_dims, nrow(expr_mtx) - 1, length(common_cells) - 1))
   dims_to_use <- seq_len(max_dim)
 
-    gobj <- runPCA(gobj,
-                    expression_values = "normalized",
-                    genes_to_use = NULL,
-                    ncp = max_dim,
-                    method = "irlba")
-  gobj <- runUMAP(gobj, dimensions_to_use = dims_to_use)
-  gobj <- createNearestNetwork(gobj, dimensions_to_use = dims_to_use, k = 20)
+  gobj <- runPCA(gobj,
+    expression_values = "normalized",
+    genes_to_use = NULL,
+    ncp = max_dim,
+    method = "irlba"
+  )
+  gobj <- runUMAP(gobj, dimensions_to_use = dims_to_use, n_threads = 4)
+  k_neigh <- max(1, min(neighbor_k, length(common_cells) - 1))
+  gobj <- createNearestNetwork(gobj, dimensions_to_use = dims_to_use, k = k_neigh)
 
-  gobj <- tryCatch({
-    doLeidenCluster(gobj, resolution = 0.4)
-  }, error = function(e) {
-    message("Leiden clustering failed for ", run_id, ": ", conditionMessage(e))
-    return(gobj)
-  })
+  gobj <- tryCatch(
+    {
+      doLeidenCluster(gobj, resolution = cluster_resolution)
+    },
+    error = function(e) {
+      message("Leiden clustering failed for ", run_id, ": ", conditionMessage(e))
+      return(gobj)
+    }
+  )
 
   cell_meta <- pDataDT(gobj)
   if ("leiden_clus" %in% names(cell_meta)) {
@@ -131,8 +151,17 @@ run_xenium_analysis <- function(h5_path) {
     }
   }
 
-  spatPlot(gobj, show_image = FALSE, cell_color = cluster_column)
-  plotUMAP(gobj, cell_color = cluster_column, point_size = 1.5)
+  spatPlot(
+    gobj,
+    show_image = FALSE,
+    cell_color = cluster_column,
+    point_size = spatial_point_size,
+    legend_text = spatial_legend_text,
+    legend_symbol_size = spatial_legend_symbol_size,
+    axis_text = spatial_axis_text,
+    axis_title = spatial_axis_title
+  )
+  plotUMAP(gobj, cell_color = cluster_column, point_size = umap_point_size)
 
   saveRDS(gobj, file = file.path(run_dir, "giotto_object.rds"))
   writeLines(capture.output(sessionInfo()), file.path(run_dir, "sessionInfo.txt"))
@@ -142,10 +171,11 @@ run_xenium_analysis <- function(h5_path) {
 
 results <- lapply(h5_paths, function(path) {
   tryCatch(run_xenium_analysis(path),
-           error = function(e) {
-             message("Failed for ", basename(dirname(path)), ": ", conditionMessage(e))
-             return(FALSE)
-           })
+    error = function(e) {
+      message("Failed for ", basename(dirname(path)), ": ", conditionMessage(e))
+      return(FALSE)
+    }
+  )
 })
 
 names(results) <- basename(dirname(h5_paths))
@@ -159,7 +189,3 @@ if (length(completed) > 0) {
 if (length(failed) > 0) {
   message("Failed runs: ", paste(failed, collapse = ", "))
 }
-
-
-
-
