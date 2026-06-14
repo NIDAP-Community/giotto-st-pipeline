@@ -35,14 +35,17 @@ templates rather than study-specific paths.
 
 ## Parameter Reference
 
-Use `input_dir` for Visium and Xenium runs. Use `input_path` for h5ad runs.
+Use `input_dir` for Visium, Visium HD, and Xenium runs. Use `input_path` for
+h5ad runs. For Visium HD, point `input_dir` to the specific bin size you want
+to analyze, such as `outs/binned_outputs/square_008um`, not the parent
+Spaceranger `outs/` directory.
 
 ### Required Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `input_format` | string | One of: `visium`, `xenium`, `h5ad`, `matrix`, `auto`. Auto-detects from directory contents if set to `auto`. |
-| `input_dir` | path | Directory containing Visium or Xenium data, such as a Spaceranger `outs/` directory or Xenium output folder. |
+| `input_dir` | path | Directory containing Visium, Visium HD, or Xenium data. For Visium use the Spaceranger `outs/` directory; for Visium HD use one selected `outs/binned_outputs/square_*um` directory; for Xenium use the Xenium output folder. |
 | `input_path` | path | Direct path to an `.h5ad` file. Use this instead of `input_dir` for h5ad runs. |
 | `output_dir` | path | Where results are written. Use `/output` for container runs. |
 | `project_id` | string | Short name for output files (e.g., `sample_A`). No spaces or special characters. |
@@ -125,7 +128,7 @@ standard convention is:
 - `/data`: read-only input data and optional config files
 - `/output`: writable analysis output
 
-For example, a Visium config used inside a container might set:
+For example, a regular Visium config used inside a container might set:
 
 ```yaml
 input_format: visium
@@ -133,6 +136,9 @@ input_dir: /data
 output_dir: /output/visium_sample
 project_id: visium_sample
 ```
+
+For Visium HD, mount the selected binned output directory as `/data`, for
+example `outs/binned_outputs/square_008um`, and keep `input_format: visium`.
 
 ## Publication Provenance
 

@@ -1,4 +1,4 @@
-# Visium config template — copy and edit for your dataset.
+# Visium/Visium HD config template — copy and edit for your dataset.
 # Lines starting with # are comments. Use "none" for optional values you want to skip.
 # See configs/README.md for full parameter descriptions.
 
@@ -7,7 +7,8 @@
 # What kind of input data
 input_format: visium
 
-# Path to the Spaceranger outs/ directory
+# Path to the Spaceranger outs/ directory. For Visium HD, use the chosen
+# binned output directory, for example outs/binned_outputs/square_008um.
 input_dir: /path/to/spaceranger/outs
 
 # Where results will be written (created automatically)

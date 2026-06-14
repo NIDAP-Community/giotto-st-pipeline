@@ -20,8 +20,10 @@ cp configs/visium_template.yaml configs/my_visium_run.yaml
 ```
 
 Edit `configs/my_visium_run.yaml` so `input_dir`, `output_dir`, and
-`project_id` match your dataset. For h5ad runs, use `input_path` instead of
-`input_dir`. Validate before running:
+`project_id` match your dataset. For regular Visium, `input_dir` is the
+Spaceranger `outs/` directory. For Visium HD, `input_dir` is the selected
+binned output directory, such as `outs/binned_outputs/square_008um`. For h5ad
+runs, use `input_path` instead of `input_dir`. Validate before running:
 
 ```bash
 Rscript scripts/validate_config.R configs/my_visium_run.yaml
@@ -118,6 +120,9 @@ The helper script works with either `apptainer` or `singularity`, mounts
 `DATA_DIR` read-only at `/data`, mounts `OUTPUT_DIR` at `/output`, and passes
 the remaining flags to `scripts/run_all.R` inside the container.
 
+For Visium HD, set `DATA_DIR` to the selected binned output directory, for
+example `/path/to/spaceranger/outs/binned_outputs/square_008um`.
+
 List all command-line flags from the container:
 
 ```bash
@@ -137,6 +142,7 @@ docker pull "${IMAGE_REPO}:${IMAGE_TAG}"
 
 cp configs/visium_template.yaml configs/my_visium_container.yaml
 # Edit configs/my_visium_container.yaml so input_dir is /data and output_dir is /output/...
+# For Visium HD, bind one square_*um binned output directory to /data.
 
 docker run --rm \
 	-v /path/to/spaceranger/outs:/data:ro \
