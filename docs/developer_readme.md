@@ -181,7 +181,7 @@ Version references:
 - `scripts/run_all.R` is the canonical CLI hub. Keep new user-facing knobs wired through this entrypoint.
 - `R/pipeline_basic.R` owns the shared analysis and export behavior.
 - `container/Dockerfile` restores from `renv.lock`; avoid maintaining a separate hand-curated R package list.
-- `container/publish.sh` refuses dirty local worktrees by default so `sha-<full-git-sha>` tags describe committed source states.
+- Publication uses the GitHub Actions workflow (`.github/workflows/publish-ghcr.yml`); it reads `VERSION` and publishes version, SHA, and `latest` tags.
 - The default container build restores the full lockfile. Use `--build-arg RENV_RESTORE_EXCLUDE=arrow` only for an explicit lean/debug variant.
 - `results/` is ignored by git; generated analysis outputs should be archived externally when needed.
 

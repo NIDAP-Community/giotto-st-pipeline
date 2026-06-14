@@ -4,6 +4,7 @@ FROM rocker/r-ver:4.4.3@sha256:3dae5d2eeddf74f10e0a81fb6b7ae350295e288000304f438
 
 ARG SOURCE_COMMIT=unknown
 ARG RENV_LOCK_SHA256=unknown
+ARG PIPELINE_VERSION=unknown
 
 LABEL org.opencontainers.image.title="giotto-st-pipeline" \
     org.opencontainers.image.description="Giotto spatial transcriptomics workflow with a staged Container-as-a-Function entrypoint" \
@@ -11,12 +12,16 @@ LABEL org.opencontainers.image.title="giotto-st-pipeline" \
     org.opencontainers.image.source="https://github.com/NIDAP-Community/giotto-st-pipeline" \
     org.opencontainers.image.documentation="https://github.com/NIDAP-Community/giotto-st-pipeline#readme" \
     org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+    org.opencontainers.image.version="${PIPELINE_VERSION}" \
     org.opencontainers.image.renv-lock-sha256="${RENV_LOCK_SHA256}"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     RENV_PATHS_CACHE=/opt/renv/cache \
     RENV_CONFIG_CACHE_ENABLED=TRUE \
     RETICULATE_PYTHON=/opt/giotto-python/bin/python \
+    GIOTTO_PIPELINE_VERSION=${PIPELINE_VERSION} \
+    GIOTTO_PIPELINE_SOURCE_COMMIT=${SOURCE_COMMIT} \
+    GIOTTO_PIPELINE_RENV_LOCK_SHA256=${RENV_LOCK_SHA256} \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt

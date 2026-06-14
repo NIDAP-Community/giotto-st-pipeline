@@ -1,0 +1,90 @@
+# Visium config template — copy and edit for your dataset.
+# Lines starting with # are comments. Use "none" for optional values you want to skip.
+# See configs/README.md for full parameter descriptions.
+
+# --- Required ----------------------------------------------------------------
+
+# What kind of input data
+input_format: visium
+
+# Path to the Spaceranger outs/ directory
+input_dir: /path/to/spaceranger/outs
+
+# Where results will be written (created automatically)
+output_dir: results/visium_sample
+
+# Short name used in output filenames (no spaces or special characters)
+project_id: visium_sample
+
+# --- Workflow control --------------------------------------------------------
+
+# Which stages to run: all, validate, ingest, qc, analyze, or export
+stage: all
+
+# Validate config and inputs without running analysis (true/false)
+dry_run: false
+
+# Path to a previously saved Giotto .rds checkpoint (for qc/analyze/export)
+input_object: none
+
+# --- Analysis parameters -----------------------------------------------------
+
+# Number of CPU cores
+cores: 4
+
+# Random seed for reproducibility
+seed: 1
+
+# Downsample to this many cells before analysis (useful for large Visium HD)
+max_cells: 6000
+
+# Number of PCA dimensions for UMAP and clustering
+pca_dims: 10
+
+# Nearest-neighbor graph k (auto-capped at cells - 1)
+neighbor_k: 20
+
+# Leiden clustering resolution (higher = more clusters)
+cluster_resolution: 0.4
+
+# --- QC thresholds (use "none" to skip) --------------------------------------
+
+# Drop cells with fewer detected genes than this (none = do not filter)
+min_genes_per_cell: none
+
+# Drop cells with total UMI counts below this (none = do not filter)
+min_total_expr_per_cell: none
+
+# Drop cells with mitochondrial fraction above this % (none = do not filter)
+max_mito_pct: none
+
+# Comma-separated prefixes for mitochondrial genes (use "none" to disable)
+mito_gene_prefixes: MT-
+
+# --- Plot appearance ---------------------------------------------------------
+
+# Dot size on spatial map
+spatial_point_size: 2.25
+
+# Dot size on UMAP
+umap_point_size: 1.5
+
+# Legend text size (pt)
+spatial_legend_text: 12
+
+# Legend symbol scale factor
+spatial_legend_symbol_size: 1.4
+
+# Axis tick label size (pt)
+spatial_axis_text: 12
+
+# Axis title size (pt)
+spatial_axis_title: 12
+
+# --- Advanced ----------------------------------------------------------------
+
+# Python binary for Giotto/reticulate (usually not needed with container)
+python_path: none
+
+# Enable verbose logging
+verbose: false

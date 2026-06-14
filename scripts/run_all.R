@@ -24,6 +24,126 @@ write_run_parameters <- function(output_dir, params) {
   invisible(path)
 }
 
+write_provenance <- function(output_dir, provenance) {
+  meta_dir <- file.path(output_dir, "metadata")
+  ensure_dir(meta_dir)
+  path <- file.path(meta_dir, "provenance.json")
+  jsonlite::write_json(provenance, path, auto_unbox = TRUE, pretty = TRUE, null = "null")
+  invisible(path)
+}
+
+nonempty_env <- function(name) {
+  value <- Sys.getenv(name, unset = NA_character_)
+  if (is.na(value) || !nzchar(value)) {
+    return(NULL)
+  }
+  value
+}
+
+command_output <- function(command, args = character(), wd = NULL) {
+  if (is.null(Sys.which(command)) || !nzchar(Sys.which(command))) {
+    return(NULL)
+  }
+  old_wd <- NULL
+  if (!is.null(wd)) {
+    if (!dir.exists(wd)) {
+      return(NULL)
+    }
+    old_wd <- getwd()
+    on.exit(setwd(old_wd), add = TRUE)
+    setwd(wd)
+  }
+  out <- tryCatch(
+    suppressWarnings(system2(command, args, stdout = TRUE, stderr = FALSE)),
+    error = function(e) NULL
+  )
+  if (is.null(out) || length(out) == 0 || !is.null(attr(out, "status"))) {
+    return(NULL)
+  }
+  paste(out, collapse = "\n")
+}
+
+sha256_file <- function(path) {
+  if (is.null(path) || !file.exists(path)) {
+    return(NULL)
+  }
+
+  sha <- command_output("sha256sum", path)
+  if (!is.null(sha)) {
+    return(strsplit(sha, "\\s+")[[1]][1])
+  }
+
+  sha <- command_output("shasum", c("-a", "256", path))
+  if (!is.null(sha)) {
+    return(strsplit(sha, "\\s+")[[1]][1])
+  }
+
+  if (requireNamespace("digest", quietly = TRUE)) {
+    return(digest::digest(path, algo = "sha256", file = TRUE))
+  }
+
+  NULL
+}
+
+read_pipeline_version <- function() {
+  repo_root <- normalizePath(file.path(get_script_dir(), ".."), mustWork = FALSE)
+  version_file <- file.path(repo_root, "VERSION")
+  if (file.exists(version_file)) {
+    return(trimws(readLines(version_file, n = 1, warn = FALSE)))
+  }
+  nonempty_env("GIOTTO_PIPELINE_VERSION") %||% "unknown"
+}
+
+collect_provenance <- function() {
+  repo_root <- normalizePath(file.path(get_script_dir(), ".."), mustWork = FALSE)
+  git_commit <- command_output("git", c("-C", repo_root, "rev-parse", "HEAD"))
+  git_status <- command_output("git", c("-C", repo_root, "status", "--porcelain"))
+  renv_lock_path <- file.path(repo_root, "renv.lock")
+
+  source_dirty <- NULL
+  if (!is.null(git_status)) {
+    source_dirty <- nzchar(git_status)
+  }
+
+  pipeline_version <- read_pipeline_version()
+  source_commit <- nonempty_env("GIOTTO_PIPELINE_SOURCE_COMMIT") %||% git_commit %||% "unknown"
+  lock_sha <- nonempty_env("GIOTTO_PIPELINE_RENV_LOCK_SHA256") %||% sha256_file(renv_lock_path)
+
+  # Warn on unresolved provenance fields
+  if (identical(pipeline_version, "unknown")) {
+    cli::cli_warn("Pipeline version could not be determined (no VERSION file or GIOTTO_PIPELINE_VERSION env var).")
+  }
+  if (identical(source_commit, "unknown")) {
+    cli::cli_warn("Source commit unknown: not a git repo and GIOTTO_PIPELINE_SOURCE_COMMIT not set.")
+  }
+  if (is.null(lock_sha)) {
+    cli::cli_warn("renv.lock SHA-256 could not be computed (file missing or no hash tool available).")
+  }
+
+  list(
+    pipeline = list(
+      name = "giotto-st-pipeline",
+      version = pipeline_version,
+      source_commit = source_commit,
+      source_dirty = source_dirty,
+      renv_lock_sha256 = lock_sha,
+      renv_lock_path = if (file.exists(renv_lock_path)) renv_lock_path else NULL
+    ),
+    container = list(
+      runtime = nonempty_env("GIOTTO_PIPELINE_CONTAINER_RUNTIME"),
+      image = nonempty_env("GIOTTO_PIPELINE_CONTAINER_IMAGE"),
+      image_digest = nonempty_env("GIOTTO_PIPELINE_CONTAINER_DIGEST"),
+      sif_path = nonempty_env("GIOTTO_PIPELINE_SIF_PATH"),
+      sif_sha256 = nonempty_env("GIOTTO_PIPELINE_SIF_SHA256")
+    ),
+    runtime = list(
+      r_version = R.version.string,
+      platform = R.version$platform,
+      timestamp_utc = timestamp_utc()
+    )
+  )
+}
+
 abort_missing <- function(flag, path) {
   if (is.null(path) || is.na(path) || !nzchar(path)) return(invisible(TRUE))
   if (!file.exists(path) && !dir.exists(path)) {
@@ -80,6 +200,9 @@ normalize_params <- function(params) {
   params$input_format <- tolower(params$input_format %||% "auto")
   params$stage <- tolower(params$stage %||% "all")
   params$output_dir <- params$output_dir %||% "/output"
+  params$project_id <- params$project_id %||% "giotto-st"
+  params$dry_run <- isTRUE(params$dry_run)
+  params$verbose <- isTRUE(params$verbose)
   params$cores <- as.integer(params$cores %||% 4)
   if (is.na(params$cores) || params$cores < 1) {
     cli::cli_abort("Invalid {.var --cores} value: {params$cores}")
@@ -133,9 +256,13 @@ normalize_params <- function(params) {
   }
 
   if (!is.null(params$max_cells)) {
-    params$max_cells <- suppressWarnings(as.integer(params$max_cells))
-    if (is.na(params$max_cells) || params$max_cells < 1) {
+    if (is.character(params$max_cells) && tolower(params$max_cells) == "none") {
       params$max_cells <- NA_integer_
+    } else {
+      params$max_cells <- suppressWarnings(as.integer(params$max_cells))
+      if (is.na(params$max_cells) || params$max_cells < 1) {
+        params$max_cells <- NA_integer_
+      }
     }
   } else {
     params$max_cells <- NA_integer_
@@ -180,7 +307,7 @@ normalize_params <- function(params) {
   prefixes <- toupper(prefixes)
   params$mito_gene_prefixes <- prefixes
 
-  if (!is.null(params$python_path) && nzchar(params$python_path)) {
+  if (!is.null(params$python_path) && nzchar(params$python_path) && tolower(params$python_path) != "none") {
     if (!file.exists(params$python_path)) {
       cli::cli_abort("Provided {.var --python_path} does not exist: {.path {params$python_path}}")
     }
@@ -204,7 +331,7 @@ normalize_params <- function(params) {
     params$input_path <- normalizePath(params$input_path, mustWork = TRUE)
   }
 
-  if (!is.null(params$input_object) && nzchar(params$input_object)) {
+  if (!is.null(params$input_object) && nzchar(params$input_object) && tolower(params$input_object) != "none") {
     if (!file.exists(params$input_object)) {
       cli::cli_abort("Input object not found: {.path {params$input_object}}")
     }
@@ -281,10 +408,14 @@ parse_args <- function() {
   # Copilot should prefer optparse for consistency with many R CLIs.
   if (requireNamespace("optparse", quietly = TRUE)) {
     optparse <- asNamespace("optparse")
+    cli_tokens <- commandArgs(trailingOnly = TRUE)
+    specified_options <- unique(sub("=.*$", "", sub("^--", "", cli_tokens[grepl("^--", cli_tokens)])))
 
     option_list <- list(
       optparse$make_option(c("--config"), type = "character", default = NULL,
                            help = "Path to YAML/JSON config file. CLI flags override config."),
+      optparse$make_option(c("--version"), action = "store_true", default = FALSE,
+                           help = "Print pipeline version and exit."),
       optparse$make_option(c("--stage"), type = "character", default = "all",
                            help = "Workflow stage: all|validate|ingest|qc|analyze|export (default: all)."),
       optparse$make_option(c("--input_format"), type = "character", default = "auto",
@@ -347,6 +478,7 @@ parse_args <- function() {
 
     parser <- optparse$OptionParser(option_list = option_list)
     args <- optparse$parse_args(parser)
+    attr(args, "specified_options") <- specified_options
 
     return(args)
   }
@@ -378,7 +510,11 @@ read_config <- function(path) {
 merge_config <- function(cfg, args) {
   # CLI overrides config when CLI is non-NULL / non-empty.
   out <- cfg
+  specified_options <- attr(args, "specified_options") %||% names(args)
   for (nm in names(args)) {
+    if (!nm %in% specified_options) {
+      next
+    }
     val <- args[[nm]]
     if (is.logical(val)) {
       # for flags, always respect CLI explicit value
@@ -735,6 +871,14 @@ apply_qc_filters <- function(gobj, stats, thresholds) {
 main <- function() {
   load_support_files()
 
+  # Handle --version before full arg parsing
+  cli_tokens <- commandArgs(trailingOnly = TRUE)
+  if ("--version" %in% cli_tokens) {
+    ver <- read_pipeline_version()
+    cat(sprintf("giotto-st-pipeline %s\n", ver))
+    return(invisible(0))
+  }
+
   args <- parse_args()
   cfg <- read_config(args$config)
   params <- merge_config(cfg, args)
@@ -765,6 +909,9 @@ main <- function() {
 
   set.seed(params$seed)
 
+  provenance <- collect_provenance()
+  provenance_path <- write_provenance(output_dir, provenance)
+
   # Record run parameters early so controlled failures still produce metadata.
   run_record <- list(
     tool = "giotto-st-pipeline",
@@ -772,12 +919,14 @@ main <- function() {
     started_utc = timestamp_utc(),
     params = params,
     stage = params$stage,
+    provenance = provenance,
     session = list(
       r_version = R.version.string,
       platform = R.version$platform
     )
   )
   run_params_path <- write_run_parameters(output_dir, run_record)
+  cli::cli_alert_info("Wrote provenance metadata: {.path {provenance_path}}")
   cli::cli_alert_info("Wrote run parameters: {.path {run_params_path}}")
 
   if (isTRUE(params$dry_run) || identical(params$stage, "validate")) {

@@ -26,81 +26,92 @@ The source Dockerfile now also provisions a dedicated Linux Python environment f
 
 ## Publish to GHCR
 
-Publish the reproducible image with one immutable tag plus floating aliases.
-The repository convention is:
+Publication uses the GitHub Actions workflow at `.github/workflows/publish-ghcr.yml`.
+The workflow reads `VERSION` and publishes three tags per release:
 
 - immutable tag: `sha-<full-git-sha>`
-- floating tag: `latest` for the full lockfile image
+- version tag: `<version>` (e.g., `0.1.0`)
+- floating tag: `latest`
 
-The immutable tag is generated from the committed source revision that contains
-the `renv.lock` used by the build. Local publishing refuses to run from a dirty
-worktree by default so the source tag cannot accidentally describe a different
-set of files than the image contains. It also verifies that the local image's
-source revision and `renv.lock` SHA-256 labels match the current checkout before
-pushing.
+To publish, trigger the workflow manually from the Actions tab (or via `gh`):
 
-Authenticate Docker to GHCR with a token that includes `write:packages`.
-If the package will be private, include `repo` as well.
-
+```bash
+gh workflow run publish-ghcr.yml
 ```
-export GHCR_TOKEN=...
-echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-username> --password-stdin
-./container/publish.sh giotto-st-pipeline:dev
-```
-
-Use `--dry-run` to preview tags without pushing:
-
-```
-./container/publish.sh giotto-st-pipeline:dev --dry-run
-```
-
-Override the immutable tag when you need a release-specific label:
-
-```
-./container/publish.sh giotto-st-pipeline:dev --immutable-tag 2026.04.02
-```
-
-Only use `--allow-dirty` for explicitly non-reproducible test publishes, and
-pair it with a custom immutable tag:
-
-```
-./container/publish.sh giotto-st-pipeline:dev \
-	--immutable-tag test-2026-06-11 \
-	--allow-dirty
-```
-
-If local Docker rebuilds are blocked by enterprise mirror or signature issues, run the manual GitHub Actions workflow at `.github/workflows/publish-ghcr.yml`. It builds on GitHub-hosted runners and can publish `sha-<full-git-sha>` and floating tags without depending on the local workstation network path.
 
 If the workflow fails with a GHCR permission error such as `permission_denied: write_package`, add a repository or organization Actions secret named `GHCR_TOKEN` and rerun the workflow. That token should include at least `write:packages` and `read:packages`; include `repo` as well when the package is tied to a private repository or org policy requires it. The workflow prefers `GHCR_TOKEN` automatically and falls back to `GITHUB_TOKEN` only when no PAT secret is configured.
 
-## Pull the published image
+## Run With Apptainer/Singularity
+
+Most HPC users should pull the published OCI image into a `.sif` artifact and
+run that file on a compute node. Pull by version tag for reproducibility:
 
 ```
-docker pull ghcr.io/nidap-community/giotto-st-pipeline:latest
+module load singularity
+
+IMAGE_REPO="ghcr.io/nidap-community/giotto-st-pipeline"
+IMAGE_TAG="0.1.0"
+
+singularity pull giotto-st-pipeline.sif "docker://${IMAGE_REPO}:${IMAGE_TAG}"
 ```
 
-Use `latest` only for exploratory runs. For a reproducible analysis, pin to the
-source commit tag:
+For bit-level pinning, resolve the digest with `skopeo` (if available):
 
 ```
-docker pull ghcr.io/nidap-community/giotto-st-pipeline:sha-<full-git-sha>
+module load skopeo
+
+IMAGE_DIGEST="$(skopeo inspect --format '{{.Digest}}' "docker://${IMAGE_REPO}:${IMAGE_TAG}")"
+IMAGE_URI="${IMAGE_REPO}@${IMAGE_DIGEST}"
+
+singularity pull giotto-st-pipeline.sif "docker://${IMAGE_URI}"
 ```
 
-For byte-identical registry pinning, use the image digest reported by GHCR,
-`docker pull`, or `docker inspect`:
+Bind input data at `/data`, output at `/output`, and pass a config file whose
+paths match those container mounts:
 
 ```
-docker pull ghcr.io/nidap-community/giotto-st-pipeline@sha256:<image-digest>
+singularity run --cleanenv \
+	--bind /path/to/spaceranger/outs:/data:ro \
+	--bind /path/to/results:/output \
+	--bind "$PWD/configs":/configs:ro \
+	giotto-st-pipeline.sif \
+	--config /configs/my_visium_container.yaml
 ```
 
-For HPC environments, convert the published OCI image directly into a `.sif` artifact:
+Use the helper script to standardize binds in HPC environments and pass SIF
+provenance into the run metadata:
 
 ```
-singularity pull giotto-st-pipeline.sif docker://ghcr.io/nidap-community/giotto-st-pipeline:latest
+DATA_DIR=/path/to/spaceranger/outs \
+OUTPUT_DIR=/path/to/results \
+EXTRA_BINDS="$PWD/configs:/configs:ro" \
+CONTAINER_IMAGE_REF="$IMAGE_URI" \
+CONTAINER_IMAGE_DIGEST="${IMAGE_DIGEST:-}" \
+./container/run_apptainer.sh giotto-st-pipeline.sif \
+	--config /configs/my_visium_container.yaml
 ```
 
-For a pinned HPC artifact, replace `:latest` with `:sha-<full-git-sha>` or
-`@sha256:<image-digest>`.
+`DATA_DIR`, `OUTPUT_DIR`, and optional `EXTRA_BINDS` control the bind mounts.
+The helper exports the runtime name, SIF path, SIF SHA-256, and optional source
+image reference so `metadata/provenance.json` captures what was executed.
+
+## Pull the published image with Docker
+
+Docker is useful for local workstation runs and image maintenance. Pull by
+version tag:
+
+```
+docker pull ghcr.io/nidap-community/giotto-st-pipeline:0.1.0
+```
+
+Inspect the version and source commit baked into the image:
+
+```
+IMAGE_REPO="ghcr.io/nidap-community/giotto-st-pipeline"
+IMAGE_TAG="0.1.0"
+docker inspect "${IMAGE_REPO}:${IMAGE_TAG}" \
+	--format 'version={{ index .Config.Labels "org.opencontainers.image.version" }} commit={{ index .Config.Labels "org.opencontainers.image.revision" }}'
+```
 
 ## Build the image from source
 
@@ -221,7 +232,7 @@ The container expects explicit mounts:
 
 Always mount host paths into those locations when running the image.
 
-## Run the pipeline
+## Run the pipeline with Docker
 
 Bind (or mount) input and output directories and forward the desired CLI flags
 to the `scripts/run_all.R` entrypoint. Example:
@@ -230,32 +241,13 @@ to the `scripts/run_all.R` entrypoint. Example:
 docker run --rm \
 	-v /path/to/xenium:/data:ro \
 	-v /path/to/results:/output \
+	-v "$PWD/configs":/configs:ro \
 	ghcr.io/nidap-community/giotto-st-pipeline:latest \
-	--input_format xenium \
-	--input_dir /data/output-XETG00202__0024834_Right__SCAF04264_Right_R1__20240912__162834 \
-	--output_dir /output/xenium_r1
+	--config /configs/my_xenium_container.yaml
 ```
 
 The container entrypoint delegates directly to `scripts/run_all.R`, so all CLI
 flags documented for the script are accepted.
-
-## Run with Apptainer/Singularity
-
-Use the helper script to standardize binds in HPC environments:
-
-```
-DATA_DIR=$PWD/test_data \
-OUTPUT_DIR=$PWD/test_output \
-./container/run_apptainer.sh /path/to/giotto-st-pipeline.sif \
-	--input_format h5ad \
-	--input_path /data/sample.h5ad \
-	--output_dir /output/sample_h5ad \
-	--project_id sample_h5ad
-```
-
-`DATA_DIR`, `OUTPUT_DIR`, and optional `EXTRA_BINDS` control the bind mounts.
-The helper also exports `R_LIBS_USER=/usr/local/lib/R/site-library` so packaged
-R dependencies remain discoverable when `HOME` is remapped by the runtime.
 
 ## Exporting for Apptainer/Singularity
 

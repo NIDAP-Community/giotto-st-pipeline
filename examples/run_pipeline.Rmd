@@ -1,0 +1,95 @@
+---
+title: "Giotto ST Pipeline Run"
+output: html_document
+params:
+  config: "configs/visium_template.yaml"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = TRUE, warning = TRUE)
+
+input_path <- knitr::current_input()
+candidate_roots <- unique(c(
+  getwd(),
+  normalizePath(file.path(dirname(input_path), ".."), mustWork = FALSE)
+))
+repo_root <- candidate_roots[file.exists(file.path(candidate_roots, "scripts", "run_all.R"))][1]
+if (is.na(repo_root)) {
+  stop("Could not find repository root containing scripts/run_all.R.")
+}
+setwd(repo_root)
+
+if (file.exists("renv/activate.R")) {
+  source("renv/activate.R")
+}
+
+if (!requireNamespace("jsonlite", quietly = TRUE)) {
+  stop("Package jsonlite is required. Restore the project with renv::restore() first.")
+}
+if (!requireNamespace("yaml", quietly = TRUE)) {
+  stop("Package yaml is required. Restore the project with renv::restore() first.")
+}
+```
+
+## Configuration
+
+```{r config}
+config_path <- normalizePath(params$config, mustWork = TRUE)
+config <- yaml::read_yaml(config_path)
+config
+```
+
+## Run Pipeline
+
+```{r run-pipeline}
+args <- c("scripts/run_all.R", "--config", config_path)
+status <- system2("Rscript", args = args)
+if (!identical(status, 0L)) {
+  stop("Pipeline command failed with exit status ", status)
+}
+```
+
+## Output Files
+
+```{r outputs}
+output_dir <- normalizePath(config$output_dir, mustWork = FALSE)
+project_id <- config$project_id
+
+paths <- list(
+  run_parameters = file.path(output_dir, "metadata", "run_parameters.json"),
+  provenance = file.path(output_dir, "metadata", "provenance.json"),
+  session_info = file.path(output_dir, "metadata", "session_info.txt"),
+  qc_metrics = file.path(output_dir, "qc", paste0(project_id, "_qc_metrics.csv")),
+  clusters = file.path(output_dir, "tables", "clusters.csv"),
+  spatial_plot = file.path(output_dir, "plots", paste0(project_id, "_spatial.png")),
+  umap_plot = file.path(output_dir, "plots", paste0(project_id, "_umap.png"))
+)
+
+data.frame(
+  artifact = names(paths),
+  path = unlist(paths, use.names = FALSE),
+  exists = file.exists(unlist(paths, use.names = FALSE))
+)
+```
+
+## Publication Provenance
+
+```{r provenance}
+if (file.exists(paths$provenance)) {
+  provenance <- jsonlite::read_json(paths$provenance, simplifyVector = TRUE)
+  provenance
+} else {
+  warning("No provenance file found at ", paths$provenance)
+}
+```
+
+## Figures
+
+```{r figures, out.width="48%"}
+if (file.exists(paths$spatial_plot)) {
+  knitr::include_graphics(paths$spatial_plot)
+}
+if (file.exists(paths$umap_plot)) {
+  knitr::include_graphics(paths$umap_plot)
+}
+```

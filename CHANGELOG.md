@@ -1,3 +1,9 @@
+## 2026-06-13
+- Reframed user instructions around local command-line R and R Markdown first, followed by Singularity/Apptainer and Docker container paths.
+- Added reusable YAML config templates for Xenium, Visium/Visium HD, and h5ad runs, plus an example R Markdown workflow.
+- Added automatic publication provenance metadata at `metadata/provenance.json` and embedded the same provenance block in `metadata/run_parameters.json`.
+- Updated Apptainer/Singularity helper behavior to pass runtime, SIF path, SIF SHA-256, and optional source image digest into run metadata.
+
 ## 2026-06-12
 - Split documentation into a user-facing root README, quickstart, container guide, and developer README with updated example output figures.
 - Added CLI controls for plot sizing and core analysis settings: `--spatial_point_size`, `--umap_point_size`, `--spatial_legend_text`, `--spatial_axis_title`, `--pca_dims`, `--neighbor_k`, and `--cluster_resolution`.

@@ -45,6 +45,7 @@ jobs:
         shell: bash
         run: |
           echo "RENV_LOCK_SHA256=$(sha256sum renv.lock | awk '{ print $1 }')" >> "$GITHUB_ENV"
+          echo "PIPELINE_VERSION=$(cat VERSION 2>/dev/null || echo unknown)" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
         if: ${{ inputs.push_image }}
@@ -59,6 +60,9 @@ jobs:
         shell: bash
         run: |
           tags="${IMAGE_NAME}:sha-${GITHUB_SHA}"
+          if [[ "${PIPELINE_VERSION}" != "unknown" && -n "${PIPELINE_VERSION}" ]]; then
+            tags+=$'\n'"${IMAGE_NAME}:${PIPELINE_VERSION}"
+          fi
           if [[ "${{ inputs.publish_floating_tags }}" == "true" ]]; then
             tags+=$'\n'"${IMAGE_NAME}:latest"
           fi
@@ -79,6 +83,7 @@ jobs:
           build-args: |
             SOURCE_COMMIT=${{ github.sha }}
             RENV_LOCK_SHA256=${{ env.RENV_LOCK_SHA256 }}
+            PIPELINE_VERSION=${{ env.PIPELINE_VERSION }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.renv-lock-sha256=${{ env.RENV_LOCK_SHA256 }}
