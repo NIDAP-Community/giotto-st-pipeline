@@ -53,9 +53,11 @@ cp configs/visium_template.yaml configs/my_visium_run.yaml
 The `export` makes the renv library available for the rest of your shell
 session, so subsequent commands don't need to repeat it.
 
-Edit the copied config before running. For Xenium or Visium, set `input_dir` to
-your data directory (for example, a Spaceranger `outs/` directory or Xenium
-output folder). For h5ad, set `input_path` to the `.h5ad` file. Set
+Edit the copied config before running. For Xenium, Visium, or Visium HD, set
+`input_dir` to your data directory. For regular Visium, use the Spaceranger
+`outs/` directory. For Visium HD, use the selected binned output directory, for
+example `outs/binned_outputs/square_008um`. For h5ad, set `input_path` to the
+`.h5ad` file. Set
 `output_dir` to where results should be written. The pipeline reads data in
 place; your input files stay where they are.
 
@@ -63,13 +65,14 @@ place; your input files stay where they are.
 - [configs/visium_template.yaml](configs/visium_template.yaml)
 - [configs/h5ad_template.yaml](configs/h5ad_template.yaml)
 
-Example config (Visium):
+Example config (Visium or Visium HD):
 
 ```yaml
 # What kind of input data (visium, xenium, h5ad, or auto to detect)
 input_format: visium
 
-# Where your data lives (full path to the Spaceranger outs/ directory)
+# Where your data lives. For Visium HD, use a chosen bin directory such as
+# /home/user/data/spaceranger/outs/binned_outputs/square_008um.
 input_dir: /home/user/data/spaceranger/outs
 
 # Where results will be written (created automatically if it doesn't exist)
@@ -155,7 +158,9 @@ project_id: visium_sample
 ```
 
 Run the pipeline using the helper script. Set `DATA_DIR` to your input data and
-`OUTPUT_DIR` to where results should be written:
+`OUTPUT_DIR` to where results should be written. For Visium HD, `DATA_DIR`
+should be the selected binned output directory, such as
+`/path/to/spaceranger/outs/binned_outputs/square_008um`.
 
 ```bash
 DATA_DIR=/path/to/spaceranger/outs \
@@ -189,6 +194,7 @@ docker pull "${IMAGE_REPO}:${IMAGE_TAG}"
 
 cp configs/visium_template.yaml configs/my_visium_container.yaml
 # Edit the copied config so input_dir is /data and output_dir is /output/...
+# For Visium HD, bind one square_*um binned output directory to /data.
 
 docker run --rm \
 	-v /path/to/spaceranger/outs:/data:ro \
@@ -275,7 +281,7 @@ and `results/<project_id>/qc/` for every pipeline run.
 | `--config` | YAML or JSON config file. CLI flags override config values. |
 | `--stage` | Workflow stage: `all`, `validate`, `ingest`, `qc`, `analyze`, or `export`. Default is `all`. |
 | `--input_format` | Choose `xenium`, `visium`, or `h5ad`; default `auto` infers from directory structure or file extension. |
-| `--input_dir` | Input directory for Xenium or Visium/Visium HD runs. |
+| `--input_dir` | Input directory for Xenium or Visium/Visium HD runs. For Visium HD, use one selected `outs/binned_outputs/square_*um` directory. |
 | `--input_path` | Direct path to a single-file input, currently `.h5ad`. |
 | `--input_object` | Existing Giotto object RDS used as input for restartable `qc`, `analyze`, or `export` stages. |
 | `--output_dir` | Directory where results are written. |
