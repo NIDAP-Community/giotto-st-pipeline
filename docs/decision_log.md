@@ -108,3 +108,30 @@
 - The repository should keep a manual GHCR publication workflow under `.github/workflows/`.
 - Maintainers can use local Docker builds for debugging, but publication should fall back to GitHub Actions when local rebuilds are unreliable.
 
+## 2026-06-13 — Adopt explicit semantic versioning via VERSION file
+**Decision:** Introduce a `VERSION` file at repo root as the single source of truth for pipeline version. The runtime reads it at startup, the Dockerfile bakes it into an OCI label and env var, and git tags must match VERSION for releases.
+
+**Rationale:** Previously, pipeline identity was tracked only via git SHA, which is opaque to end users, silently degrades to "unknown" in non-git contexts (containers, tarballs), and provides no user-facing indicator of compatibility or release status. A semantic version gives users, publications, and CI a stable human-readable identifier.
+
+**Alternatives considered:**
+- DESCRIPTION file (R package style): heavier, implies package semantics this project doesn't need.
+- Git-tag-only: fails in non-git contexts (container runtime, downloaded archives).
+- Env-var-only: requires build-time coordination and has no source-tree presence.
+
+**Consequences:**
+- Release workflow must bump `VERSION`, tag the commit, and rebuild the container.
+- `provenance.json` now includes `pipeline.version`.
+- Runtime warns if version resolves to "unknown" (missing VERSION file + missing env var).
+- `--version` flag allows quick identification without a full run.
+
+## 2026-06-13 — Version-tagged container images; remove local publish.sh
+**Decision:** Publish container images with a semantic version tag (e.g., `0.1.0`) in addition to `sha-<commit>` and `latest`. Remove the local `container/publish.sh` script since the GitHub Actions workflow is the canonical publish path.
+
+**Rationale:** Users pulling containers could only use opaque SHA tags or the unstable `latest`. A version tag makes the pull command readable and citeable (e.g., `docker pull ...giotto-st-pipeline:0.1.0`). The local `publish.sh` duplicated functionality already covered by the GH Actions workflow and added confusion about which publish path to use.
+
+**Consequences:**
+- GHCR images now carry three tags per release: `<version>`, `sha-<commit>`, `latest`.
+- README/QUICKSTART container sections reference version tags as the primary pull method.
+- Digest pinning is documented as an optional advanced path for bit-level reproducibility.
+- `container/publish.sh` is removed; maintainers use the GH Actions workflow or `docker push` directly.
+

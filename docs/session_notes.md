@@ -88,3 +88,22 @@
 - Extended the Dockerfile's baked Python environment to include the Giotto-related runtime modules needed for `h5ad` ingest and clustering (`anndata`, `scipy`, `python-igraph`, `leidenalg`, `networkx`, `scikit-learn`, `python-louvain`) and added `cmake` for more reliable package builds in GitHub-hosted rebuilds.
 - The first GitHub-hosted publish attempt failed with `permission_denied: write_package` while using `GITHUB_TOKEN`, so the workflow was updated to prefer an Actions secret named `GHCR_TOKEN` for GHCR pushes and fall back to `GITHUB_TOKEN` only when no PAT is configured.
 - Added `libgmp3-dev` and `pandoc` to the Dockerfile after reviewing the build-failure analysis, since the lockfile includes `gmp` and `rmarkdown` and those system dependencies may be needed during clean GitHub-hosted rebuilds.
+
+## 2026-06-13
+- Addressed end-user usability across skill tiers and versioning/provenance gaps.
+- Created `VERSION` file (0.1.0) as single source of truth for pipeline version.
+- Updated `scripts/run_all.R`:
+  - Added `read_pipeline_version()` helper.
+  - `collect_provenance()` now includes `pipeline.version` field and emits `cli::cli_warn()` when key provenance fields resolve to "unknown".
+  - Added `--version` flag (prints version and exits before full arg parse).
+- Updated `container/Dockerfile`:
+  - Added `PIPELINE_VERSION` build arg, OCI `version` label, and `GIOTTO_PIPELINE_VERSION` env var.
+- Updated `container/build.sh` to read `VERSION` and pass it as build arg.
+- Created `examples/slurm_template.sh` — ready-to-use SBATCH job script for HPC users.
+- Expanded `configs/README.md` with full parameter reference table and `--dry_run` validation instructions.
+- Created `scripts/validate_config.R` — standalone config validator with format-mismatch detection and actionable suggestions. Updated QUICKSTART to reference it before the first run.
+- Removed `container/publish.sh` (redundant with GH Actions workflow per decision log 2026-04-08).
+- Updated `.github/workflows/publish-ghcr.yml` to read `VERSION`, pass `PIPELINE_VERSION` build-arg, and publish a version-tagged image (e.g., `:0.1.0`) alongside `sha-*` and `latest`.
+- Simplified README §3 (Singularity) and §4 (Docker) to lead with version-tagged pulls; digest pinning documented as optional.
+- Updated `git checkout <commit-or-tag>` → `git checkout v0.1.0` in README and QUICKSTART.
+- Continued YAML usability cleanup: templates now show optional fields explicitly with `none` sentinels rather than blanks, and `scripts/validate_config.R` treats `none`/blank values consistently for optional paths and numeric thresholds.
